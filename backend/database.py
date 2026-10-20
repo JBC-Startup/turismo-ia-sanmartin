@@ -40,7 +40,7 @@ if not is_testing:
     })
 
 async_engine = create_async_engine(
-    settings.DATABASE_URL,
+    settings.effective_database_url,
     **engine_kwargs,
 )
 

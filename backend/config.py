@@ -37,12 +37,23 @@ class Settings(BaseSettings):
     # Configuración de Pydantic v2 Settings
     model_config = SettingsConfigDict(
         env_file=(
-            BACKEND_DIR / ".env",
             PROJECT_ROOT / ".env",
+            BACKEND_DIR / ".env",
         ),
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @property
+    def effective_database_url(self) -> str:
+        url = self.DATABASE_URL
+        if "@db:" in url:
+            import socket
+            try:
+                socket.gethostbyname("db")
+            except Exception:
+                url = url.replace("@db:5432", "@localhost:5434").replace("@db:", "@localhost:")
+        return url
 
     def get_resolved_model_path(self) -> Path:
         """
