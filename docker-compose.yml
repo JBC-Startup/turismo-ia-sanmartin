@@ -1,0 +1,63 @@
+services:
+  # =====================================================================
+  # 1. Base de Datos Relacional PostgreSQL 16 con Esquema y Datos Semilla
+  # =====================================================================
+  db:
+    image: postgres:16-alpine
+    container_name: turismoia_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin123}
+      POSTGRES_DB: ${POSTGRES_DB:-turismoia}
+    ports:
+      - "${DB_PORT:-5434}:5432"
+    volumes:
+      - pgdata_turismo:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-turismoia}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - turismo_net
+
+  # =====================================================================
+  # 2. Servicio REST FastAPI con Inferencia ML Integrada
+  # =====================================================================
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: turismoia_api
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-admin123}@db:5432/${POSTGRES_DB:-turismoia}
+      DB_SCHEMA: turismo
+      MODEL_PATH: /app/ml_engine/models/modelo_recomendador_sanmartin.pkl
+      PYTHONPATH: /app/ml_engine:/app/backend
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./ml_engine/models:/app/ml_engine/models:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    networks:
+      - turismo_net
+
+volumes:
+  pgdata_turismo:
+    name: database_pgdata_turismo
+
+networks:
+  turismo_net:
+    name: turismo_net
+    driver: bridge

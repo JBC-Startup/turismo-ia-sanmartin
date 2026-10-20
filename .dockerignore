@@ -1,0 +1,28 @@
+# Entornos virtuales
+**/venv/
+**/.venv/
+venv/
+.venv/
+
+# Bytecode y caches
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+
+# Git
+.git/
+.gitignore
+
+# Archivos de entorno y logs locales
+**/*.log
+**/.env.local
+
+# Archivos pesados no necesarios para inferencia en producción
+ml_engine/data/raw/
+ml_engine/data/processed/
+ml_engine/notebooks/
+ml_engine/tests/
+backend/tests/
