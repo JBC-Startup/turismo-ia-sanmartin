@@ -24,6 +24,7 @@ from models import (
     Valoracion,
 )
 from schemas import (
+    ChatResponse,
     PreferenciaRequest,
     RecomendacionItem,
     RecomendacionResponse,
@@ -33,11 +34,16 @@ from schemas import (
 
 logger = logging.getLogger(__name__)
 
+# Almacenamiento en memoria para modo autónomo (cuando PostgreSQL no está activo)
+MEM_SESIONES: dict[str, dict[str, Any]] = {}
+MEM_EJECUCIONES: dict[int, dict[str, Any]] = {}
+MEM_VALORACIONES: dict[int, dict[str, Any]] = {}
+
 
 class CatalogCache:
     """
-    Caché en memoria de catálogos y metadatos de PostgreSQL para optimización extrema.
-    Se carga una sola vez durante el lifespan del servidor.
+    Caché en memoria de catálogos y metadatos para optimización extrema.
+    Puede sincronizarse con PostgreSQL o inicializarse autónomamente desde el catálogo serializado.
     """
 
     def __init__(self) -> None:
@@ -48,6 +54,36 @@ class CatalogCache:
         self.dificultad_map: dict[str, int] = {}      # nombre_lower -> id_dificultad
         self.active_model_id: int = 1
         self.cluster_map: dict[int, int] = {}         # numero_cluster -> id_cluster
+
+    def load_from_catalogo(self, catalogo: pd.DataFrame, cluster_metadata: Optional[dict[int, dict[str, str]]] = None) -> None:
+        """Inicializa catálogos directamente desde el DataFrame de atractivos en RAM."""
+        for idx, row in catalogo.iterrows():
+            aid = int(idx) + 1
+            cod = str(row.get("id_recurso", f"REC-{aid:05d}"))
+            nom = str(row.get("nombre_recurso", "")).upper()
+            self.atractivo_map[cod] = aid
+            self.atractivo_name_map[nom] = aid
+
+            prov = str(row.get("provincia", "")).upper()
+            if prov and prov not in self.provincia_map:
+                self.provincia_map[prov] = f"22{len(self.provincia_map)+1:02d}"
+
+        for cid, nom in enumerate(["Solo", "Pareja", "Amigos", "Familia", "Familia con niños", "Adulto mayor", "Todos"], start=1):
+            self.compania_map[nom.lower()] = cid
+
+        for did, nom in enumerate(["Baja", "Media", "Alta"], start=1):
+            self.dificultad_map[nom.lower()] = did
+
+        if cluster_metadata:
+            for c_num in cluster_metadata:
+                self.cluster_map[c_num] = c_num
+
+        logger.info(
+            "Caché inicializado desde catálogo en memoria: %d atractivos, %d provincias, %d compañías.",
+            len(self.atractivo_map),
+            len(self.provincia_map),
+            len(self.compania_map),
+        )
 
     async def load(self, db: AsyncSession, cluster_metadata: Optional[dict[int, dict[str, str]]] = None) -> None:
         """
@@ -202,6 +238,10 @@ async def generar_y_persistir_recomendaciones(
     compania_id = cache.compania_map.get(preferencias.compania.lower())
     dificultad_id = cache.dificultad_map.get(preferencias.nivel_dificultad.lower())
 
+    import uuid
+    id_sesion_gen = uuid.uuid4()
+    id_ejecucion_gen = (int(time.time() * 1000) % 2000000000) + 1
+
     sesion = SesionPreferencia(
         tiempo_disponible_horas=Decimal(str(round(preferencias.tiempo_en_horas, 2))),
         presupuesto_max_pen=Decimal(str(round(preferencias.presupuesto, 2))) if preferencias.presupuesto is not None else None,
@@ -212,19 +252,32 @@ async def generar_y_persistir_recomendaciones(
         tipo_dispositivo=preferencias.tipo_dispositivo,
         consentimiento_datos=preferencias.consentimiento_datos,
     )
-    db.add(sesion)
-    await db.flush()
+    sesion.id_sesion = id_sesion_gen
+
+    db_persisted = False
+    if db is not None:
+        try:
+            db.add(sesion)
+            await db.flush()
+            db_persisted = True
+        except Exception as exc:
+            logger.warning("Fallo al persistir sesión en PostgreSQL: %s. Operando en memoria.", exc)
+            db_persisted = False
 
     # Si se seleccionó provincia específica, registrarla en sesion_provincia
     prov_key = preferencias.provincia.upper()
     if prov_key not in ["TODAS", "TODOS", "CUALQUIERA", ""]:
         id_prov = cache.provincia_map.get(prov_key)
-        if id_prov:
-            sesion_prov = SesionProvincia(
-                id_sesion=sesion.id_sesion,
-                id_provincia=id_prov,
-            )
-            db.add(sesion_prov)
+        if id_prov and db_persisted:
+            try:
+                sesion_prov = SesionProvincia(
+                    id_sesion=sesion.id_sesion,
+                    id_provincia=id_prov,
+                )
+                db.add(sesion_prov)
+                await db.flush()
+            except Exception as exc:
+                logger.warning("No se pudo persistir sesion_provincia: %s", exc)
 
     # 6. Persistir EjecucionRecomendacion
     ejecucion = EjecucionRecomendacion(
@@ -235,18 +288,27 @@ async def generar_y_persistir_recomendaciones(
         tiempo_respuesta_ms=elapsed_ms,
         parametros_aplicados=preferencias.model_dump(),
     )
-    db.add(ejecucion)
-    await db.flush()
+    if not db_persisted:
+        ejecucion.id_ejecucion = id_ejecucion_gen
+
+    if db_persisted:
+        try:
+            db.add(ejecucion)
+            await db.flush()
+        except Exception as exc:
+            logger.warning("Fallo al persistir ejecución en PostgreSQL: %s", exc)
+            db_persisted = False
+            ejecucion.id_ejecucion = id_ejecucion_gen
 
     # 7. Persistir Recomendaciones individuales (Top-N)
     items_response: list[RecomendacionItem] = []
     fallback_provincia_aplicado = False
 
-    for r in recs:
+    for idx, r in enumerate(recs):
         cod_recurso = r["id_recurso"]
         id_atractivo = cache.atractivo_map.get(cod_recurso)
         if not id_atractivo:
-            id_atractivo = cache.atractivo_name_map.get(r["nombre_recurso"].upper(), 1)
+            id_atractivo = cache.atractivo_name_map.get(r["nombre_recurso"].upper(), idx + 1)
 
         afinidad_norm = round(max(0.0, min(1.0, float(r["afinidad_pct"]) / 100.0)), 4)
         explicacion_truncada = str(r["justificacion"])[:400]
@@ -254,20 +316,26 @@ async def generar_y_persistir_recomendaciones(
         if r.get("fallback_provincia", False):
             fallback_provincia_aplicado = True
 
-        rec_db = Recomendacion(
-            id_ejecucion=ejecucion.id_ejecucion,
-            id_atractivo=id_atractivo,
-            posicion=r["ranking"],
-            puntaje_afinidad=Decimal(str(afinidad_norm)),
-            cumple_filtros=cumple_filtros,
-            explicacion=explicacion_truncada,
-        )
-        db.add(rec_db)
-        await db.flush()
+        rec_id = idx + 1 + (ejecucion.id_ejecucion * 10)
+        if db_persisted:
+            try:
+                rec_db = Recomendacion(
+                    id_ejecucion=ejecucion.id_ejecucion,
+                    id_atractivo=id_atractivo,
+                    posicion=r["ranking"],
+                    puntaje_afinidad=Decimal(str(afinidad_norm)),
+                    cumple_filtros=cumple_filtros,
+                    explicacion=explicacion_truncada,
+                )
+                db.add(rec_db)
+                await db.flush()
+                rec_id = rec_db.id_recomendacion
+            except Exception as exc:
+                logger.warning("No se pudo persistir recomendacion en DB: %s", exc)
 
         items_response.append(
             RecomendacionItem(
-                id_recomendacion=rec_db.id_recomendacion,
+                id_recomendacion=rec_id,
                 posicion=r["ranking"],
                 id_atractivo=id_atractivo,
                 codigo_recurso=cod_recurso,
@@ -293,7 +361,24 @@ async def generar_y_persistir_recomendaciones(
             )
         )
 
-    await db.commit()
+    if db_persisted:
+        try:
+            await db.commit()
+        except Exception as exc:
+            logger.warning("Fallo en db.commit(): %s", exc)
+
+    # Registrar en memoria para persistencia local y fallback de valoración
+    MEM_SESIONES[str(sesion.id_sesion)] = {
+        "id_sesion": sesion.id_sesion,
+        "preferencias": preferencias.model_dump(),
+    }
+    MEM_EJECUCIONES[ejecucion.id_ejecucion] = {
+        "id_ejecucion": ejecucion.id_ejecucion,
+        "id_sesion": sesion.id_sesion,
+        "recomendaciones": items_response,
+        "tiempo_respuesta_ms": elapsed_ms,
+        "cumple_filtros": not fallback_provincia_aplicado,
+    }
 
     return RecomendacionResponse(
         id_sesion=sesion.id_sesion,
@@ -312,13 +397,24 @@ async def registrar_feedback(
 ) -> ValoracionResponse:
     """
     Registra el feedback de un turista en 'turismo.valoracion' vinculado a la ejecución.
+    Si la base de datos no está disponible, almacena la valoración en memoria.
     """
+    from datetime import datetime, timezone
+
     # 1. Validar existencia de la ejecución
-    res_ejec = await db.execute(
-        select(EjecucionRecomendacion).where(EjecucionRecomendacion.id_ejecucion == val_data.id_ejecucion)
-    )
-    ejecucion = res_ejec.scalar_one_or_none()
-    if not ejecucion:
+    ejecucion_db = None
+    ejecucion_mem = MEM_EJECUCIONES.get(val_data.id_ejecucion)
+
+    if db is not None:
+        try:
+            res_ejec = await db.execute(
+                select(EjecucionRecomendacion).where(EjecucionRecomendacion.id_ejecucion == val_data.id_ejecucion)
+            )
+            ejecucion_db = res_ejec.scalar_one_or_none()
+        except Exception as exc:
+            logger.warning("Fallo al consultar ejecución en PostgreSQL: %s", exc)
+
+    if not ejecucion_db and not ejecucion_mem:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"La ejecución de recomendación con ID {val_data.id_ejecucion} no existe.",
@@ -326,14 +422,25 @@ async def registrar_feedback(
 
     # 2. Validar que la recomendación elegida pertenezca a la misma ejecución
     if val_data.id_recomendacion_elegida is not None:
-        res_rec = await db.execute(
-            select(Recomendacion).where(
-                Recomendacion.id_recomendacion == val_data.id_recomendacion_elegida,
-                Recomendacion.id_ejecucion == val_data.id_ejecucion,
-            )
-        )
-        rec = res_rec.scalar_one_or_none()
-        if not rec:
+        rec_valida = False
+        if ejecucion_db:
+            try:
+                res_rec = await db.execute(
+                    select(Recomendacion).where(
+                        Recomendacion.id_recomendacion == val_data.id_recomendacion_elegida,
+                        Recomendacion.id_ejecucion == val_data.id_ejecucion,
+                    )
+                )
+                if res_rec.scalar_one_or_none():
+                    rec_valida = True
+            except Exception:
+                pass
+        if not rec_valida and ejecucion_mem:
+            recs_in_mem = ejecucion_mem.get("recomendaciones", [])
+            if any(r.id_recomendacion == val_data.id_recomendacion_elegida for r in recs_in_mem):
+                rec_valida = True
+
+        if not rec_valida:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
@@ -345,57 +452,222 @@ async def registrar_feedback(
     else:
         eligio = bool(val_data.eligio_alternativa)
 
-    # 3. Verificar si ya existe valoración previa para esta ejecución
-    res_exist = await db.execute(
-        select(Valoracion).where(Valoracion.id_ejecucion == val_data.id_ejecucion)
-    )
-    val_exist = res_exist.scalar_one_or_none()
-
     comentario_clean = val_data.comentario.strip()[:500] if val_data.comentario else None
+    ahora = datetime.now(timezone.utc)
 
-    if val_exist:
-        # Actualización idempotente
-        val_exist.utilidad = val_data.utilidad
-        val_exist.eligio_alternativa = eligio
-        val_exist.id_recomendacion_elegida = val_data.id_recomendacion_elegida
-        val_exist.explicacion_comprensible = val_data.explicacion_comprensible
-        val_exist.comentario = comentario_clean
-        await db.commit()
-        await db.refresh(val_exist)
+    # Si hay conexión a BD, intentar persistir en PostgreSQL
+    if ejecucion_db and db is not None:
+        try:
+            res_exist = await db.execute(
+                select(Valoracion).where(Valoracion.id_ejecucion == val_data.id_ejecucion)
+            )
+            val_exist = res_exist.scalar_one_or_none()
 
-        return ValoracionResponse(
-            id_valoracion=val_exist.id_valoracion,
-            id_ejecucion=val_exist.id_ejecucion,
-            utilidad=val_exist.utilidad,
-            eligio_alternativa=val_exist.eligio_alternativa,
-            id_recomendacion_elegida=val_exist.id_recomendacion_elegida,
-            explicacion_comprensible=val_exist.explicacion_comprensible,
-            comentario=val_exist.comentario,
-            fecha=val_exist.fecha,
-            mensaje="Valoración actualizada exitosamente",
-        )
+            if val_exist:
+                val_exist.utilidad = val_data.utilidad
+                val_exist.eligio_alternativa = eligio
+                val_exist.id_recomendacion_elegida = val_data.id_recomendacion_elegida
+                val_exist.explicacion_comprensible = val_data.explicacion_comprensible
+                val_exist.comentario = comentario_clean
+                await db.commit()
+                await db.refresh(val_exist)
 
-    # 4. Creación de nueva valoración
-    nueva_val = Valoracion(
+                return ValoracionResponse(
+                    id_valoracion=val_exist.id_valoracion,
+                    id_ejecucion=val_exist.id_ejecucion,
+                    utilidad=val_exist.utilidad,
+                    eligio_alternativa=val_exist.eligio_alternativa,
+                    id_recomendacion_elegida=val_exist.id_recomendacion_elegida,
+                    explicacion_comprensible=val_exist.explicacion_comprensible,
+                    comentario=val_exist.comentario,
+                    fecha=val_exist.fecha,
+                    mensaje="Valoración actualizada exitosamente",
+                )
+
+            nueva_val = Valoracion(
+                id_ejecucion=val_data.id_ejecucion,
+                utilidad=val_data.utilidad,
+                eligio_alternativa=eligio,
+                id_recomendacion_elegida=val_data.id_recomendacion_elegida,
+                explicacion_comprensible=val_data.explicacion_comprensible,
+                comentario=comentario_clean,
+            )
+            db.add(nueva_val)
+            await db.commit()
+            await db.refresh(nueva_val)
+
+            return ValoracionResponse(
+                id_valoracion=nueva_val.id_valoracion,
+                id_ejecucion=nueva_val.id_ejecucion,
+                utilidad=nueva_val.utilidad,
+                eligio_alternativa=nueva_val.eligio_alternativa,
+                id_recomendacion_elegida=nueva_val.id_recomendacion_elegida,
+                explicacion_comprensible=nueva_val.explicacion_comprensible,
+                comentario=nueva_val.comentario,
+                fecha=nueva_val.fecha,
+                mensaje="Valoración registrada exitosamente",
+            )
+        except Exception as exc:
+            logger.warning("Fallo en persistencia de feedback en PostgreSQL (%s). Guardando en memoria.", exc)
+
+    # Persistencia en memoria
+    val_id = MEM_VALORACIONES.get(val_data.id_ejecucion, {}).get("id_valoracion", len(MEM_VALORACIONES) + 1)
+    record = {
+        "id_valoracion": val_id,
+        "id_ejecucion": val_data.id_ejecucion,
+        "utilidad": val_data.utilidad,
+        "eligio_alternativa": eligio,
+        "id_recomendacion_elegida": val_data.id_recomendacion_elegida,
+        "explicacion_comprensible": val_data.explicacion_comprensible,
+        "comentario": comentario_clean,
+        "fecha": ahora,
+    }
+    MEM_VALORACIONES[val_data.id_ejecucion] = record
+
+    return ValoracionResponse(
+        id_valoracion=val_id,
         id_ejecucion=val_data.id_ejecucion,
         utilidad=val_data.utilidad,
         eligio_alternativa=eligio,
         id_recomendacion_elegida=val_data.id_recomendacion_elegida,
         explicacion_comprensible=val_data.explicacion_comprensible,
         comentario=comentario_clean,
+        fecha=ahora,
+        mensaje="Valoración registrada exitosamente en memoria",
     )
-    db.add(nueva_val)
-    await db.commit()
-    await db.refresh(nueva_val)
 
-    return ValoracionResponse(
-        id_valoracion=nueva_val.id_valoracion,
-        id_ejecucion=nueva_val.id_ejecucion,
-        utilidad=nueva_val.utilidad,
-        eligio_alternativa=nueva_val.eligio_alternativa,
-        id_recomendacion_elegida=nueva_val.id_recomendacion_elegida,
-        explicacion_comprensible=nueva_val.explicacion_comprensible,
-        comentario=nueva_val.comentario,
-        fecha=nueva_val.fecha,
-        mensaje="Valoración registrada exitosamente",
+
+def procesar_consulta_asistente(
+    message: str,
+    context: Optional[dict[str, Any]],
+    engine: Any,
+) -> ChatResponse:
+    """
+    Motor conversacional de TurismoIA San Martín:
+    - Interpreta la intención del turista.
+    - Consulta el catálogo de 297 atractivos verificados de San Martín.
+    - Si hay un contexto activo (ej. un destino que está viendo en el mapa o carrusel), lo incorpora.
+    - Devuelve una respuesta rica, fidedigna, con sugerencias y atractivos relevantes.
+    """
+    msg_lower = message.lower().strip()
+    catalogo = getattr(engine, "catalogo", None) if engine else None
+
+    # Contexto activo si existe
+    context_name = None
+    if context and isinstance(context, dict):
+        context_name = context.get("name") or context.get("nombre")
+
+    related: list[dict[str, Any]] = []
+    actions: list[str] = [
+        "¿Cuáles son las mejores cataratas?",
+        "¿Qué opciones culturales hay en Lamas?",
+        "¿Qué actividades hay en la Laguna de Sauce?",
+        "¿Dónde probar la gastronomía típica?",
+    ]
+
+    # Palabras clave de búsqueda en catálogo
+    query_terms = []
+    if any(k in msg_lower for k in ["catarata", "cascada", "caida", "ahuashiyacu", "huacamaillo"]):
+        query_terms.extend(["CATARATA", "CASCADA", "CAIDAS DE AGUA"])
+    elif any(k in msg_lower for k in ["laguna", "sauce", "azul", "lago"]):
+        query_terms.extend(["LAGUNA", "LAGO"])
+    elif any(k in msg_lower for k in ["cueva", "gruta", "palestina"]):
+        query_terms.extend(["CUEVA", "GRUTA", "PALESTINA"])
+    elif any(k in msg_lower for k in ["cultura", "museo", "templo", "castillo", "wayku"]):
+        query_terms.extend(["CULTURAL", "TEMPLO", "CASTILLO", "MUSEO", "WAYKU"])
+    elif any(k in msg_lower for k in ["tarapoto", "san martin"]):
+        query_terms.extend(["TARAPOTO", "SAN MARTIN"])
+    elif "lamas" in msg_lower:
+        query_terms.extend(["LAMAS"])
+    elif "moyobamba" in msg_lower:
+        query_terms.extend(["MOYOBAMBA", "ORQUIDEAS"])
+    elif "rioja" in msg_lower:
+        query_terms.extend(["RIOJA", "NACIENTE"])
+
+    if catalogo is not None and not catalogo.empty:
+        matches = pd.DataFrame()
+        if context_name:
+            c_matches = catalogo[catalogo["nombre_recurso"].str.contains(context_name.upper(), regex=False, na=False)]
+            if not c_matches.empty:
+                matches = c_matches
+
+        if matches.empty and query_terms:
+            pattern = "|".join(query_terms)
+            matches = catalogo[
+                catalogo["nombre_recurso"].str.contains(pattern, case=False, na=False) |
+                catalogo["categoria"].str.contains(pattern, case=False, na=False) |
+                catalogo["tipo"].str.contains(pattern, case=False, na=False) |
+                catalogo["etiquetas_interes"].str.contains(pattern, case=False, na=False) |
+                catalogo["provincia"].str.contains(pattern, case=False, na=False)
+            ]
+
+        sample_rows = matches.head(3) if not matches.empty else catalogo.head(3)
+        for _, row in sample_rows.iterrows():
+            related.append({
+                "id_recurso": str(row.get("id_recurso", "")),
+                "nombre": str(row.get("nombre_recurso", "")),
+                "provincia": str(row.get("provincia", "")),
+                "distrito": str(row.get("distrito", "")),
+                "duracion_horas": float(row.get("duracion_estimada_horas", 2.0)),
+                "costo_pen": float(row.get("costo_referencial_pen", 0.0)),
+                "dificultad": str(row.get("nivel_dificultad", "Media")),
+                "imagen_url": str(row.get("imagen_url", "")),
+                "descripcion": str(row.get("descripcion_corta", ""))[:180] + "...",
+            })
+
+    # Elaborar respuesta
+    if context_name and any(k in msg_lower for k in ["cómo llegar", "detalle", "información", "cuéntame"]):
+        reply = (
+            f"📍 **{context_name}** es uno de los destinos más cautivadores de la región San Martín. "
+            f"Se ubica en la provincia de {context.get('province', 'San Martín')}. "
+            "Para tu visita te sugiero llevar calzado cómodo para caminata, ropa fresca y repelente ecológico. "
+            "Las mejores horas para recorrerlo son temprano por la mañana."
+        )
+    elif any(k in msg_lower for k in ["catarata", "cascada"]):
+        reply = (
+            "🌊 San Martín cuenta con impresionantes caídas de agua. Destacan **Ahuashiyacu** "
+            "(a solo 20 min de Tarapoto por la carretera a Yurimaguas), **Huacamaillo** en San Antonio "
+            "(caminata activa cruzando el río Cumbaza) y **Carpishuyacu** con sus pozas termales naturales. "
+            "La mayoría tiene un costo accesible entre S/ 5 y S/ 15."
+        )
+    elif any(k in msg_lower for k in ["laguna", "sauce", "azul"]):
+        reply = (
+            "⛵ La **Laguna de Sauce** (Laguna Azul) se encuentra a 52 km de Tarapoto. "
+            "El viaje incluye cruzar el río Huallaga en balsa cautiva, una experiencia pintoresca. "
+            "En la laguna puedes pasear en lancha, hacer kayak, canopy, o disfrutar de la gastronomía ribereña."
+        )
+    elif any(k in msg_lower for k in ["lamas", "castillo"]):
+        reply = (
+            "🏰 **Lamas**, la 'Ciudad de los Tres Pisos', está a 25 min de Tarapoto. "
+            "Visita obligada es el **Castillo de Lamas**, el **Barrio Nativo Wayku** (con artesanías y tradiciones Kichwa), "
+            "y las tiendas locales de chocolate y café artesanal."
+        )
+    elif any(k in msg_lower for k in ["moyobamba", "orquidea"]):
+        reply = (
+            "🌺 **Moyobamba**, la 'Ciudad de las Orquídeas', ofrece hermosos orquidearios como Waqanki, "
+            "los relajantes **Baños Termales de San Mateo** y paseos en bote por el río Mayo hasta la reserva Tingana."
+        )
+    elif any(k in msg_lower for k in ["comida", "gastronomia", "platos", "comer", "juane"]):
+        reply = (
+            "🍲 ¡La gastronomía de la selva es un festín! No dejes de probar el tradicional **Juane de gallina**, "
+            "el sabroso **Tacacho con cecina y chorizo**, la **Patarashca** de pescado amazónico, "
+            "y refrescos naturales de camu camu, cocona o maracuyá."
+        )
+    elif any(k in msg_lower for k in ["presupuesto", "costo", "barato", "precio"]):
+        reply = (
+            "💰 San Martín es un destino muy amigable con el bolsillo. Muchas cataratas y miradores "
+            "tienen entradas entre S/ 3 y S/ 15. La movilidad en mototaxi y colectivos locales es económica, "
+            "y la oferta gastronómica ofrece platos generosos desde S/ 15 a S/ 25."
+        )
+    else:
+        reply = (
+            "🌿 ¡Hola! Soy tu **Guía Inteligente de San Martín**. Conozco los 297 atractivos oficiales de las "
+            "10 provincias de la región, sus distancias, costos y niveles de dificultad. "
+            "¿Qué tipo de viaje tienes en mente: cataratas, lagunas, cultura o sabores de la selva?"
+        )
+
+    return ChatResponse(
+        reply=reply,
+        suggested_actions=actions,
+        related_atractivos=related,
     )
