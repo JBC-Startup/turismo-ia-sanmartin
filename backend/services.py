@@ -598,7 +598,10 @@ async def consultar_gemini(
         "5. Sé directo, cálido y no inventes destinos fuera de San Martín."
     )
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.GEMINI_MODEL}:generateContent?key={api_key.strip()}"
+    candidate_models = [settings.GEMINI_MODEL, "gemini-3.1-flash-lite", "gemini-3.5-flash"]
+    # Eliminar duplicados manteniendo orden
+    candidate_models = list(dict.fromkeys(m for m in candidate_models if m))
+
     payload = {
         "contents": [
             {
@@ -616,17 +619,22 @@ async def consultar_gemini(
 
     try:
         import httpx
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(url, json=payload)
-            if resp.status_code == 200:
-                data = resp.json()
-                candidates = data.get("candidates", [])
-                if candidates:
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    if parts and "text" in parts[0]:
-                        return parts[0]["text"].strip()
-            else:
-                logger.warning("Gemini API respondió con código %d: %s", resp.status_code, resp.text[:200])
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            for model_name in candidate_models:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key.strip()}"
+                try:
+                    resp = await client.post(url, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        candidates = data.get("candidates", [])
+                        if candidates:
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            if parts and "text" in parts[0]:
+                                return parts[0]["text"].strip()
+                    else:
+                        logger.warning("Gemini API (%s) respondió con código %d: %s", model_name, resp.status_code, resp.text[:180])
+                except Exception as req_exc:
+                    logger.debug("Error intentando modelo %s: %s", model_name, req_exc)
     except Exception as exc:
         logger.warning("Fallo al comunicarse con Gemini API: %s. Operando con fallback.", exc)
 
@@ -775,19 +783,33 @@ async def procesar_consulta_asistente(
                 f"¿Deseas detalles sobre rutas de acceso, costos de entrada o las mejores temporadas para visitarlos?"
             )
 
-    # Sugerencias contextuales de preguntas
-    actions = [
-        "¿Cuáles son las cataratas más recomendadas?",
-        "¿Qué visitar en un viaje familiar?",
-        "¿Dónde conocer la ruta del cacao y café?",
-        "¿Cómo llegar a la Laguna de Sauce?",
-    ]
+    # Sugerencias contextuales y fluidas de preguntas de seguimiento
+    actions: list[str] = []
+    if related:
+        primero = related[0]["nombre"]
+        actions.append(f"¿Cómo llegar a {primero}?")
+        actions.append(f"¿Cuál es el costo de ingreso a {primero}?")
+        if len(related) > 1:
+            segundo = related[1]["nombre"]
+            actions.append(f"Cuéntame más sobre {segundo}")
 
-    return ChatResponse(
-        reply=reply,
-        suggested_actions=actions,
-        related_atractivos=related,
-    )
+    if len(actions) < 4:
+        if any(k in msg_lower for k in ["catarata", "cascada", "agua"]):
+            actions.extend(["¿Qué calzado se necesita para las cataratas?", "¿Cuáles son las más cercanas a Tarapoto?"])
+        elif any(k in msg_lower for k in ["sauce", "laguna", "azul"]):
+            actions.extend(["¿Cómo cruzar el río Huallaga en balsa?", "¿Qué actividades náuticas hay en Sauce?"])
+        elif any(k in msg_lower for k in ["lamas", "castillo"]):
+            actions.extend(["¿Cuánto cuesta la entrada al Castillo de Lamas?", "¿Dónde conocer artesanía en El Wayku?"])
+        elif any(k in msg_lower for k in ["moyobamba", "orquidea"]):
+            actions.extend(["¿Cuáles son los horarios de los Baños Termales?", "¿Dónde visitar los mejores orquidearios?"])
+        else:
+            actions.extend([
+                "¿Cuáles son las cataratas más recomendadas?",
+                "¿Qué platos típicos probar en San Martín?",
+                "¿Qué atractivos son ideales para la familia?",
+            ])
+
+    actions = list(dict.fromkeys(actions))[:4]
 
     return ChatResponse(
         reply=reply,
