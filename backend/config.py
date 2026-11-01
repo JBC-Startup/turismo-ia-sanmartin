@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     # Modelo Recomendador de Machine Learning
     MODEL_PATH: str = "../ml_engine/models/modelo_recomendador_sanmartin.pkl"
 
+    # Integración con Google Gemini AI
+    GEMINI_API_KEY: str | None = None
+    GEMINI_MODEL: str = "gemini-2.5-flash"
+
     # API Metadata
     PROJECT_NAME: str = "TurismoIA San Martín API"
     VERSION: str = "1.0.0"

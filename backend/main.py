@@ -512,9 +512,9 @@ async def obtener_metricas_prototipo(db: AsyncSession = Depends(get_db)) -> Metr
     tags=["Asistente IA"],
 )
 async def chat_asistente(chat_req: ChatRequest) -> ChatResponse:
-    """Procesa consultas en lenguaje natural de los turistas usando el catálogo y modelo de San Martín."""
+    """Procesa consultas en lenguaje natural de los turistas usando el catálogo, modelo ML y Gemini AI."""
     engine = getattr(app.state, "engine", None)
-    return procesar_consulta_asistente(
+    return await procesar_consulta_asistente(
         message=chat_req.message,
         context=chat_req.context,
         engine=engine,
