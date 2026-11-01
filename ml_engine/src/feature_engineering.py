@@ -42,6 +42,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import unicodedata
+
+def normalizar_texto_simple(texto: Any) -> str:
+    """Elimina tildes/acentos y normaliza a mayúsculas sin espacios extra."""
+    if pd.isna(texto) or texto is None:
+        return ""
+    nfkd = unicodedata.normalize('NFKD', str(texto))
+    return "".join([c for c in nfkd if not unicodedata.combining(c)]).strip().upper()
+
 # Lista representativa de stop words en español (artículos, preposiciones, conectores, pronombres)
 SPANISH_STOP_WORDS: list[str] = [
     "a", "al", "algo", "algunas", "algunos", "ante", "antes", "aquel", "aquellas", "aquellos",
@@ -68,7 +77,11 @@ SPANISH_STOP_WORDS: list[str] = [
     "tenian", "tenido", "tiene", "tienen", "toda", "todas", "todavia", "todo", "todos",
     "tras", "tu", "tus", "tuve", "tuvieron", "tuvo", "tuya", "tuyo", "un", "una", "unas",
     "uno", "unos", "va", "vamos", "van", "varias", "varios", "vosotras", "vosotros", "voy",
-    "y", "ya", "yo"
+    "y", "ya", "yo",
+    # Términos administrativos genéricos sin valor semántico turístico
+    "ajustarse", "debe", "deben", "definicion", "dependen", "descripcion",
+    "edicion", "figura", "manera", "propone", "propuesto", "provisional",
+    "requiere", "responsables", "validacion", "vincula", "corresponde"
 ]
 
 
@@ -85,7 +98,7 @@ class TurismoFeaturePipeline:
 
     def __init__(
         self,
-        max_features: int = 120,
+        max_features: int = 450,
         text_columns: list[str] | None = None,
         categorical_columns: list[str] | None = None,
         numerical_columns: list[str] | None = None,
@@ -148,7 +161,8 @@ class TurismoFeaturePipeline:
 
     def _prepare_categorical_input(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Prepara las variables categóricas rellenando columnas ausentes con valores por defecto.
+        Prepara las variables categóricas rellenando columnas ausentes con valores por defecto
+        y normalizando nombres de provincias sin tildes para evitar descalces.
         """
         defaults = {
             "nivel_dificultad": "Media",
@@ -158,7 +172,10 @@ class TurismoFeaturePipeline:
         df_cat = pd.DataFrame(index=df.index)
         for col in self.categorical_columns:
             if col in df.columns:
-                df_cat[col] = df[col].fillna(defaults.get(col, "Desconocido")).astype(str)
+                val_series = df[col].fillna(defaults.get(col, "Desconocido")).astype(str)
+                if col == "provincia":
+                    val_series = val_series.apply(normalizar_texto_simple)
+                df_cat[col] = val_series
             else:
                 df_cat[col] = defaults.get(col, "Desconocido")
         return df_cat
@@ -223,9 +240,9 @@ class TurismoFeaturePipeline:
         if not self.is_fitted:
             raise RuntimeError("El pipeline no ha sido ajustado. Llame a fit() antes de transform().")
 
-        # 1. Transformación de texto
+        # 1. Transformación de texto con ponderación semántica preponderante
         corpus = self.build_corpus(df)
-        X_text = self.tfidf.transform(corpus)
+        X_text = self.tfidf.transform(corpus) * 5.0
 
         # 2. Transformación categórica
         df_cat = self._prepare_categorical_input(df)
@@ -462,7 +479,7 @@ def main() -> None:
     parser.add_argument(
         "--max-features",
         type=int,
-        default=120,
+        default=450,
         help="Número máximo de términos para TF-IDF",
     )
     parser.add_argument(
