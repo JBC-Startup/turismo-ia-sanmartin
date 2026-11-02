@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+import unicodedata
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -12,7 +13,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-
 from models import (
     Atractivo,
     ClusterPerfil,
@@ -36,6 +36,13 @@ from schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+def normalizar_cadena(val: Any) -> str:
+    """Elimina acentos y normaliza a mayúsculas sin espacios redundantes."""
+    if val is None or pd.isna(val):
+        return ""
+    nfkd = unicodedata.normalize('NFKD', str(val))
+    return "".join([c for c in nfkd if not unicodedata.combining(c)]).strip().upper()
 
 # Almacenamiento en memoria para modo autónomo (cuando PostgreSQL no está activo)
 MEM_SESIONES: dict[str, dict[str, Any]] = {}
@@ -67,9 +74,12 @@ class CatalogCache:
             self.atractivo_map[cod] = aid
             self.atractivo_name_map[nom] = aid
 
-            prov = str(row.get("provincia", "")).upper()
-            if prov and prov not in self.provincia_map:
-                self.provincia_map[prov] = f"22{len(self.provincia_map)+1:02d}"
+            prov_norm = normalizar_cadena(row.get("provincia", ""))
+            prov_raw = str(row.get("provincia", "")).upper()
+            if prov_norm and prov_norm not in self.provincia_map:
+                pid = f"22{len(self.provincia_map)+1:02d}"
+                self.provincia_map[prov_norm] = pid
+                self.provincia_map[prov_raw] = pid
 
         for cid, nom in enumerate(["Solo", "Pareja", "Amigos", "Familia", "Familia con niños", "Adulto mayor", "Todos"], start=1):
             self.compania_map[nom.lower()] = cid
@@ -104,6 +114,7 @@ class CatalogCache:
         res_prov = await db.execute(select(Provincia.id_provincia, Provincia.nombre))
         for pid, nom in res_prov.all():
             self.provincia_map[nom.upper()] = pid
+            self.provincia_map[normalizar_cadena(nom)] = pid
 
         # 3. Compañía de viaje
         res_comp = await db.execute(select(CompaniaViaje.id_compania, CompaniaViaje.nombre))
@@ -162,18 +173,18 @@ class CatalogCache:
 
 def count_candidates(catalogo: pd.DataFrame, perfil: dict[str, Any]) -> int:
     """
-    Calcula cuántos atractivos satisfacen los filtros duros obligatorios.
+    Calcula cuántos atractivos satisfacen los filtros duros obligatorios con normalización de caracteres.
     """
     tiempo_max = float(perfil.get("tiempo_disponible_horas", 8.0))
     presupuesto_val = perfil.get("presupuesto_max_pen")
     presupuesto_max = float(presupuesto_val) if presupuesto_val is not None else 9999.0
-    provincia_in = str(perfil.get("provincia", "Todas")).strip()
-    filtro_prov_activo = provincia_in.upper() not in ["TODAS", "TODOS", "CUALQUIERA", ""]
+    provincia_in = normalizar_cadena(perfil.get("provincia", "Todas"))
+    filtro_prov_activo = provincia_in not in ["TODAS", "TODOS", "CUALQUIERA", ""]
 
     mask_tiempo = catalogo["duracion_estimada_horas"] <= tiempo_max
     mask_costo = catalogo["costo_referencial_pen"] <= presupuesto_max
     mask_prov = (
-        catalogo["provincia"].str.upper() == provincia_in.upper()
+        catalogo["provincia"].apply(normalizar_cadena) == provincia_in
         if filtro_prov_activo
         else pd.Series(True, index=catalogo.index)
     )
@@ -268,9 +279,9 @@ async def generar_y_persistir_recomendaciones(
             db_persisted = False
 
     # Si se seleccionó provincia específica, registrarla en sesion_provincia
-    prov_key = preferencias.provincia.upper()
-    if prov_key not in ["TODAS", "TODOS", "CUALQUIERA", ""]:
-        id_prov = cache.provincia_map.get(prov_key)
+    prov_norm = normalizar_cadena(preferencias.provincia)
+    if prov_norm not in ["TODAS", "TODOS", "CUALQUIERA", ""]:
+        id_prov = cache.provincia_map.get(prov_norm) or cache.provincia_map.get(preferencias.provincia.upper())
         if id_prov and db_persisted:
             try:
                 sesion_prov = SesionProvincia(
@@ -540,181 +551,266 @@ async def registrar_feedback(
     )
 
 
-from gemini_service import consultar_gemini, buscar_atractivos_relevantes, es_consulta_de_atractivos
+async def consultar_gemini(
+    message: str,
+    atractivos_relevantes: list[dict[str, Any]],
+    contexto_activo: Optional[dict[str, Any]] = None,
+) -> Optional[str]:
+    """
+    Invoca la API de Google Gemini para redactar una respuesta conversacional enriquecida,
+    usando como base fidedigna los atractivos del catálogo oficial seleccionados por el modelo ML.
+    """
+    api_key = settings.GEMINI_API_KEY
+    if not api_key or not api_key.strip():
+        return None
+
+    # Sintetizar información verificada de los atractivos para contextualizar al modelo
+    destinos_contexto = []
+    for a in atractivos_relevantes[:5]:
+        destinos_contexto.append(
+            f"- **{a['nombre']}** ({a.get('provincia', 'San Martín')} · {a.get('distrito', '')}): "
+            f"{a.get('descripcion', '')} "
+            f"[Duración: {a.get('duracion_horas', 2.0)}h | "
+            f"Costo: S/ {a.get('costo_pen', 0.0):.2f} | "
+            f"Dificultad: {a.get('dificultad', 'Media')}]"
+        )
+    destinos_str = "\n".join(destinos_contexto) if destinos_contexto else "Catálogo general de atractivos de San Martín."
+
+    contexto_pantalla = ""
+    if contexto_activo and isinstance(contexto_activo, dict):
+        c_nom = contexto_activo.get("name") or contexto_activo.get("nombre", "")
+        c_prov = contexto_activo.get("province") or contexto_activo.get("provincia", "")
+        c_desc = contexto_activo.get("description") or contexto_activo.get("descripcion", "")
+        if c_nom:
+            contexto_pantalla = (
+                f"\n\n[Destino actualmente seleccionado en la pantalla del turista: {c_nom} ({c_prov}). "
+                f"Descripción: {c_desc}]"
+            )
+
+    system_prompt = (
+        "Eres el Asistente y Guía Turístico Inteligente oficial de la región San Martín, Perú (TurismoIA San Martín). "
+        "Tu misión es orientar al turista con respuestas dinámicas, acogedoras, concisas y fidedignas en español.\n\n"
+        "DIRECTRICES:\n"
+        "1. Usa como fuente primaria la siguiente información verificada del catálogo oficial:\n"
+        f"{destinos_str}{contexto_pantalla}\n\n"
+        "2. Responde en 2 a 3 párrafos breves o viñetas concisas con formato Markdown legible (resalta destinos en negrita).\n"
+        "3. Incluye datos prácticos reales (precios referenciales en soles, tiempos de visita, tipo de calzado, clima cálido/húmedo o recomendaciones de traslado desde Tarapoto, Moyobamba o Lamas).\n"
+        "4. Si la consulta es amplia o sobre gastronomía/cultura, orienta con platos emblemáticos (juane, tacacho, patarashca, café y cacao orgánico) y sitios típicos.\n"
+        "5. Sé directo, cálido y no inventes destinos fuera de San Martín."
+    )
+
+    candidate_models = [settings.GEMINI_MODEL, "gemini-3.1-flash-lite", "gemini-3.5-flash"]
+    # Eliminar duplicados manteniendo orden
+    candidate_models = list(dict.fromkeys(m for m in candidate_models if m))
+
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": f"{system_prompt}\n\nPregunta del turista: {message}"}
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.4,
+            "maxOutputTokens": 650,
+        }
+    }
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            for model_name in candidate_models:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key.strip()}"
+                try:
+                    resp = await client.post(url, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        candidates = data.get("candidates", [])
+                        if candidates:
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            if parts and "text" in parts[0]:
+                                return parts[0]["text"].strip()
+                    else:
+                        logger.warning("Gemini API (%s) respondió con código %d: %s", model_name, resp.status_code, resp.text[:180])
+                except Exception as req_exc:
+                    logger.debug("Error intentando modelo %s: %s", model_name, req_exc)
+    except Exception as exc:
+        logger.warning("Fallo al comunicarse con Gemini API: %s. Operando con fallback.", exc)
+
+    return None
 
 
-def _respuesta_local_fallback(
+async def procesar_consulta_asistente(
     message: str,
     context: Optional[dict[str, Any] | str],
     catalogo: Optional[pd.DataFrame],
 ) -> ChatResponse:
-    """Respuesta heurística instantánea, cálida y de alta calidad para el turista."""
-    msg_lower = message.lower().strip()
-    related = buscar_atractivos_relevantes(message, context=context, catalogo=catalogo, limit=4) if es_consulta_de_atractivos(message) else []
+    """
+    Motor conversacional de TurismoIA San Martín:
+    - Interpreta la intención del turista y busca atractivos reales mediante similitud semántica en el catálogo.
+    - Si `GEMINI_API_KEY` está configurada en .env, genera una respuesta inteligente, dinámica y personalizada.
+    - Si no está disponible, utiliza el motor de respuesta enriquecido en memoria.
+    - Devuelve la respuesta, las acciones sugeridas y las tarjetas de destinos oficiales.
+    """
+    msg_clean = message.strip()
+    msg_lower = msg_clean.lower()
+    catalogo = getattr(engine, "catalogo", None) if engine else None
 
+    # Contexto activo de la vista (ej. destino seleccionado en explorador)
     context_name = None
-    context_prov = "San Martín"
-    if isinstance(context, dict):
-        context_name = (
-            context.get("name")
-            or context.get("nombre")
-            or context.get("title")
-            or context.get("destination")
-            or context.get("atractivo")
-        )
-        context_prov = context.get("province") or context.get("provincia") or "San Martín"
-    elif isinstance(context, str) and context.strip():
-        context_name = context.strip()
+    if context and isinstance(context, dict):
+        context_name = context.get("name") or context.get("nombre")
 
-    c_clean = str(context_name).strip() if context_name else None
+    related: list[dict[str, Any]] = []
 
-    # Acciones por defecto
-    if c_clean:
-        actions = [
-            f"¿Qué actividades hacer en {c_clean}?",
-            f"¿Cómo llegar a {c_clean}?",
-            f"¿Cuál es el costo y horario en {c_clean}?",
-            "¿Qué otros atractivos hay cerca?",
-        ]
+    # 1. Búsqueda semántica y recuperación de atractivos relevantes del catálogo
+    if catalogo is not None and not catalogo.empty:
+        matches = pd.DataFrame()
+
+        # Priorizar si coincide con el destino en pantalla
+        if context_name:
+            c_norm = normalizar_cadena(context_name)
+            c_matches = catalogo[catalogo["nombre_recurso"].apply(normalizar_cadena).str.contains(c_norm, regex=False, na=False)]
+            if not c_matches.empty:
+                matches = pd.concat([matches, c_matches])
+
+        # Búsqueda semántica usando el vectorizador del motor si está disponible
+        pipeline = getattr(engine, "feature_pipeline", None)
+        if pipeline and hasattr(pipeline, "tfidf") and hasattr(engine, "X_global"):
+            try:
+                from sklearn.metrics.pairwise import cosine_similarity
+                # Vectorizar texto de consulta
+                q_vec = pipeline.tfidf.transform([msg_clean]) * 5.0
+                # Extraer componente de texto de X_global
+                n_text_cols = len(pipeline.tfidf.get_feature_names_out())
+                X_text_corpus = engine.X_global[:, :n_text_cols]
+                text_sims = cosine_similarity(q_vec, X_text_corpus).flatten()
+
+                top_k_indices = text_sims.argsort()[::-1][:5]
+                top_df = catalogo.iloc[top_k_indices]
+                matches = pd.concat([matches, top_df]).drop_duplicates(subset=["id_recurso"])
+            except Exception as exc:
+                logger.debug("Búsqueda vectorial en chat falló, usando filtro léxico: %s", exc)
+
+        # Fallback a búsqueda léxica si no hubo suficientes coincidencias
+        if len(matches) < 3:
+            term_candidates = [w for w in msg_lower.replace(",", " ").replace("?", "").split() if len(w) > 3]
+            if term_candidates:
+                pattern = "|".join([normalizar_cadena(t) for t in term_candidates])
+                lexical_matches = catalogo[
+                    catalogo["nombre_recurso"].apply(normalizar_cadena).str.contains(pattern, regex=True, na=False) |
+                    catalogo["etiquetas_interes"].apply(normalizar_cadena).str.contains(pattern, regex=True, na=False) |
+                    catalogo["subtipo"].apply(normalizar_cadena).str.contains(pattern, regex=True, na=False) |
+                    catalogo["provincia"].apply(normalizar_cadena).str.contains(pattern, regex=True, na=False)
+                ]
+                matches = pd.concat([matches, lexical_matches]).drop_duplicates(subset=["id_recurso"])
+
+        # Si aún no hay matches, tomar una selección representativa
+        sample_rows = matches.head(3) if not matches.empty else catalogo.head(3)
+
+        for _, row in sample_rows.iterrows():
+            costo = float(row.get("costo_referencial_pen", 0.0))
+            related.append({
+                "id_recurso": str(row.get("id_recurso", "")),
+                "nombre": str(row.get("nombre_recurso", "")),
+                "provincia": str(row.get("provincia", "")),
+                "distrito": str(row.get("distrito", "")),
+                "duracion_horas": float(row.get("duracion_estimada_horas", 2.0)),
+                "costo_pen": costo,
+                "dificultad": str(row.get("nivel_dificultad", "Media")),
+                "imagen_url": str(row.get("imagen_url", "")),
+                "descripcion": str(row.get("descripcion_corta", ""))[:180] + ("..." if len(str(row.get("descripcion_corta", ""))) > 180 else ""),
+            })
+
+    # 2. Generación con Gemini AI si la clave está disponible
+    gemini_reply = await consultar_gemini(
+        message=msg_clean,
+        atractivos_relevantes=related,
+        contexto_activo=context,
+    )
+
+    # 3. Fallback dinámico si Gemini no está activo o no respondió
+    if gemini_reply:
+        reply = gemini_reply
     else:
-        actions = [
-            "¿Cuáles son las mejores cataratas cerca de Tarapoto?",
-            "¿Qué actividades puedo hacer en la Laguna de Sauce?",
-            "¿Qué opciones culturales y artesanales hay en Lamas?",
-            "¿Dónde degustar la mejor gastronomía típica de la región?",
-        ]
-
-    # 1. Detección de presentación personal / nombre del turista
-    match_nombre = re.search(r"(?:mi\s+nombre\s+es|me\s+llamo|soy)\s+([A-Za-zÀ-ÿ]+)", msg_lower)
-    if match_nombre:
-        nombre_turista = match_nombre.group(1).capitalize()
-        if c_clean:
+        # Generador de respuesta dinámica contextual basado en el catálogo
+        if context_name:
+            c_prov = context.get('province') or context.get('provincia') or 'San Martín'
             reply = (
-                f"¡Mucho gusto, {nombre_turista}! Qué alegría saludarte y tenerte por aquí 😊.\n\n"
-                f"Veo que te encuentras explorando **{c_clean}** ({context_prov}), uno de los destinos más hermosos de la región. "
-                f"Dime, {nombre_turista}, ¿qué planes tienes en mente para hoy? ¿Te gustaría saber qué actividades acuáticas hacer, "
-                f"cómo llegar a los mejores rincones o dónde probar la comida típica?"
+                f"📍 **{context_name}** es uno de los destinos emblemáticos de la provincia de **{c_prov}**. "
+                f"Para visitarlo te recomiendo calzado adecuado con buen agarre, ropa ligera y repelente contra insectos. "
+                f"Las primeras horas de la mañana son ideales para evitar las horas de mayor calor y disfrutar de la luz natural."
+            )
+        elif any(k in msg_lower for k in ["catarata", "cascada", "caida", "ahuashiyacu"]):
+            reply = (
+                "🌊 En la región San Martín destacan espectaculares caídas de agua como **Ahuashiyacu** "
+                "(a solo 20 min de Tarapoto), **Pucayaquillo** en Shapaja (caminata refrescante en selva) y "
+                "las cascadas de **Lamas** y **Moyobamba**. La mayoría cuenta con senderos accesibles y costos de ingreso entre S/ 5 y S/ 15."
+            )
+        elif any(k in msg_lower for k in ["laguna", "sauce", "azul", "lago"]):
+            reply = (
+                "⛵ La **Laguna de Sauce (Laguna Azul)** es la joya lacustre de San Martín, a 52 km de Tarapoto cruzando el río Huallaga en balsa cautiva. "
+                "Ofrece navegación en bote, kayak, descanso en resorts ribereños y deliciosa gastronomía de pescados amazónicos."
+            )
+        elif any(k in msg_lower for k in ["lamas", "castillo", "wayku"]):
+            reply = (
+                "🏰 **Lamas**, la histórica 'Ciudad de los Tres Pisos', ofrece una mezcla única de naturaleza y herencia cultural. "
+                "No te pierdas el **Castillo de Lamas**, el **Barrio Nativo Kechwa El Wayku**, y sus talleres de artesanía y chocolate artesanal."
+            )
+        elif any(k in msg_lower for k in ["moyobamba", "orquidea", "san mateo"]):
+            reply = (
+                "🌺 **Moyobamba**, la 'Ciudad de las Orquídeas', cautiva con sus orquidearios Waqanki, los relajantes "
+                "**Baños Termales de San Mateo** y la navegación ecológica en la reserva Tingana por el río Mayo."
+            )
+        elif any(k in msg_lower for k in ["comida", "gastronomia", "comer", "juane", "cacao", "chocolate", "cafe"]):
+            reply = (
+                "🍲 ¡La gastronomía sanmartinense es un deleite amazónico! Disfruta del auténtico **Juane de gallina**, "
+                "el **Tacacho con cecina y chorizo regional**, la **Patarashca** a la parrilla, y visita emprendimientos como "
+                "**Misky Cacao** o la **Fábrica de Chocolates Orquídea**."
+            )
+        elif any(k in msg_lower for k in ["familia", "ninos", "accesib", "facil"]):
+            reply = (
+                "👨‍👩‍👧‍👦 Para viajes familiares o con ritmo pausado, te sugiero destinos con dificultad baja como "
+                "las **Cataratas de Ahuashiyacu**, el paseo por la **Laguna de Sauce**, el **Castillo de Lamas** y los miradores urbanos de Tarapoto y Moyobamba."
             )
         else:
+            n_destinos = len(related)
+            destinos_mencionados = ", ".join([f"**{r['nombre']}** ({r['provincia']})" for r in related[:2]])
             reply = (
-                f"¡Bienvenido a San Martín, {nombre_turista}! Es un verdadero placer saludarte 😊.\n\n"
-                f"Estoy aquí para guiarte por las 10 provincias de la región. Cuéntame, {nombre_turista}, "
-                f"¿qué tipo de experiencia buscas: cataratas refrescantes, lagunas relajantes, aventura o gastronomía?"
+                f"🌿 ¡Hola! Soy tu **Guía Inteligente de San Martín**. Conozco los 297 atractivos oficiales de la región. "
+                f"Para tu consulta te recomiendo explorar {destinos_mencionados}. "
+                f"¿Deseas detalles sobre rutas de acceso, costos de entrada o las mejores temporadas para visitarlos?"
             )
-        return ChatResponse(reply=reply, suggested_actions=actions, related_atractivos=related)
 
-    # 2. Saludos de cortesía ("cómo estás", "qué tal", "cómo te va") -> Prioridad absoluta
-    if any(k in msg_lower for k in ["como estas", "cómo estás", "que tal", "qué tal", "como te va", "cómo te va", "todo bien"]):
-        if c_clean:
-            reply = (
-                f"😊 ¡Hola! Muy bien, muchas gracias por preguntar. ¡Qué gusto saludarte!\n\n"
-                f"Veo que estás explorando **{c_clean}** 🌴. ¿En qué te puedo orientar hoy? "
-                f"¿Te gustaría saber qué actividades hacer, cómo llegar desde Tarapoto o sus costos y mejores horarios?"
-            )
+    # Sugerencias contextuales y fluidas de preguntas de seguimiento
+    actions: list[str] = []
+    if related:
+        primero = related[0]["nombre"]
+        actions.append(f"¿Cómo llegar a {primero}?")
+        actions.append(f"¿Cuál es el costo de ingreso a {primero}?")
+        if len(related) > 1:
+            segundo = related[1]["nombre"]
+            actions.append(f"Cuéntame más sobre {segundo}")
+
+    if len(actions) < 4:
+        if any(k in msg_lower for k in ["catarata", "cascada", "agua"]):
+            actions.extend(["¿Qué calzado se necesita para las cataratas?", "¿Cuáles son las más cercanas a Tarapoto?"])
+        elif any(k in msg_lower for k in ["sauce", "laguna", "azul"]):
+            actions.extend(["¿Cómo cruzar el río Huallaga en balsa?", "¿Qué actividades náuticas hay en Sauce?"])
+        elif any(k in msg_lower for k in ["lamas", "castillo"]):
+            actions.extend(["¿Cuánto cuesta la entrada al Castillo de Lamas?", "¿Dónde conocer artesanía en El Wayku?"])
+        elif any(k in msg_lower for k in ["moyobamba", "orquidea"]):
+            actions.extend(["¿Cuáles son los horarios de los Baños Termales?", "¿Dónde visitar los mejores orquidearios?"])
         else:
-            reply = (
-                "😊 ¡Hola! Muy bien, muchas gracias por preguntar. ¡Qué gusto saludarte!\n\n"
-                "¿En qué puedo ayudarte hoy a planear tu viaje por San Martín? "
-                "Cuéntame si buscas cataratas cristalinas, lagunas tranquilas, lugares culturales o dónde comer rico."
-            )
-        return ChatResponse(reply=reply, suggested_actions=actions, related_atractivos=related)
+            actions.extend([
+                "¿Cuáles son las cataratas más recomendadas?",
+                "¿Qué platos típicos probar en San Martín?",
+                "¿Qué atractivos son ideales para la familia?",
+            ])
 
-    # 3. Saludo simple ("hola", "buenas", "buenos días")
-    if msg_lower in ("hola", "buenas", "buenos dias", "buenos días", "buenas tardes", "buenas noches", "hey"):
-        if c_clean:
-            reply = (
-                f"👋 ¡Hola! Qué alegría saludarte. Estás explorando **{c_clean}**, uno de los destinos más hermosos de {context_prov}.\n\n"
-                f"¿En qué te puedo colaborar hoy? ¿Deseas conocer qué actividades hacer, cómo llegar o recomendaciones para tu visita?"
-            )
-        else:
-            reply = (
-                "👋 ¡Hola! Bienvenido a tu **Guía Inteligente de la Región San Martín**.\n\n"
-                "Conozco los 297 atractivos oficiales de la región: caídas de agua, lagunas, naturaleza, cultura y gastronomía. "
-                "¿Qué tipo de experiencia estás buscando hoy?"
-            )
-        return ChatResponse(reply=reply, suggested_actions=actions, related_atractivos=related)
-
-    # 4. Paseos en bote / actividades acuáticas
-    if any(k in msg_lower for k in ["bote", "lancha", "paseo", "navegar", "kayak", "acuatic"]):
-        destino = c_clean or "la Laguna de Sauce"
-        reply = (
-            f"🚤 **Paseos en bote y actividades acuáticas en {destino}**:\n\n"
-            f"- **Paseos en bote tradicional:** El alquiler de un bote privado para grupos o familias suele rondar entre **S/ 80 y S/ 120**, "
-            f"con un recorrido de 1h 30min a 2h haciendo paradas escénicas. En botes colectivos, el costo es de **S/ 15 a S/ 25** por persona.\n"
-            f"- **Deportes de aventura:** También puedes alquilar kayaks, motos acuáticas o hacer canopy cruzando sobre el agua.\n\n"
-            "¿Deseas saber cuál es el mejor horario para embarcarte?"
-        )
-        return ChatResponse(reply=reply, suggested_actions=actions, related_atractivos=related)
-
-    # 5. Consultas sobre cómo llegar / ruta
-    if any(k in msg_lower for k in ["cómo llegar", "como llegar", "ruta", "transporte", "viaje", "distancia", "llegar"]):
-        destino = c_clean or "este destino"
-        reply = (
-            f"🚗 **Cómo llegar a {destino}**:\n\n"
-            f"Desde la ciudad de Tarapoto, puedes tomar transporte colectivo, taxi o tour guiado. "
-            f"Para destinos como Sauce, el trayecto incluye cruzar el río Huallaga en balsa cautiva (unos 50 km, aprox. 1h 30min). "
-            f"Para cataratas cercanas como Ahuashiyacu, está a tan solo 20 minutos por la carretera a Yurimaguas. "
-            "Te sugiero salir temprano por la mañana para aprovechar el día y llevar repelente y protector solar."
-        )
-        return ChatResponse(reply=reply, suggested_actions=actions, related_atractivos=related)
-
-    # 6. Consultas sobre costos / precios / tarifas
-    if any(k in msg_lower for k in ["costo", "precio", "cuánto", "cuanto", "entrada", "tarifa", "presupuesto"]):
-        destino = c_clean or "los atractivos de San Martín"
-        reply = (
-            f"🎟️ **Costos referenciales para {destino}**:\n\n"
-            f"El acceso a atractivos naturales en la región suele tener tarifas de ingreso muy accesibles, "
-            f"generalmente entre **S/ 5.00 y S/ 15.00** por persona. "
-            f"Las actividades adicionales (paseos en bote, canopy o deportes de aventura) oscilan entre **S/ 20 y S/ 40**."
-        )
-        return ChatResponse(reply=reply, suggested_actions=actions, related_atractivos=related)
-
-    # 5. Consultas temáticas generales
-    if any(k in msg_lower for k in ["catarata", "cascada", "caida"]):
-        reply = (
-            "🌊 **Cataratas imperdibles en San Martín**:\n\n"
-            "- **Catarata de Ahuashiyacu**: A solo 20 min de Tarapoto, caída de 40 metros ideal para un chapuzón refrescante.\n"
-            "- **Catarata de Huacamaillo**: En San Antonio de Cumbaza, perfecta para caminatas y naturaleza.\n"
-            "- **Cataratas de Carpishuyacu**: Con pozas termales naturales y senderos en selva virgen.\n\n"
-            "¿Te gustaría conocer cómo llegar a alguna de ellas o sus costos de entrada?"
-        )
-    elif any(k in msg_lower for k in ["laguna", "sauce", "azul"]):
-        reply = (
-            "⛵ **Laguna Azul (Sauce)**:\n\n"
-            "Ubicada a 52 km de Tarapoto, es el principal destino de relax y deportes acuáticos de San Martín. "
-            "El viaje incluye cruzar el río Huallaga en balsa cautiva. En la laguna puedes realizar navegación en lancha, "
-            "kayak, canopy, motos acuáticas y degustar trucha fresca o cecina ribereña."
-        )
-    elif any(k in msg_lower for k in ["lamas", "castillo"]):
-        reply = (
-            "🏰 **Lamas, la Ciudad de los Tres Pisos**:\n\n"
-            "A solo 25 min de Tarapoto, visita obligada es el **Castillo de Lamas**, el tradicional "
-            "**Barrio Nativo Wayku** (con artesanías, danzas y tradiciones de la etnia Kichwa) y "
-            "los deliciosos cafés y chocolates artesanales de la zona."
-        )
-    elif any(k in msg_lower for k in ["moyobamba", "orquidea", "termales"]):
-        reply = (
-            "🌺 **Moyobamba, Ciudad de las Orquídeas**:\n\n"
-            "Disfruta de sus famosos orquidearios, relájate en los **Baños Termales de San Mateo** y "
-            "explora la reserva ecológica Tingana navegando entre ríos y aguajales vírgenes."
-        )
-    elif any(k in msg_lower for k in ["comida", "gastronomia", "platos", "comer", "juane"]):
-        reply = (
-            "🍲 **Gastronomía de la Selva Sanmartinense**:\n\n"
-            "Prueba el tradicional **Juane de gallina**, el sabroso **Tacacho con cecina y chorizo regional**, "
-            "la **Patarashca** envuelta en hoja de bijao, y acompáñalos con refrescos naturales de camu camu o cocona."
-        )
-    elif c_clean:
-        reply = (
-            f"🌴 Estás explorando **{c_clean}** en {context_prov}.\n\n"
-            f"Es un lugar excelente para disfrutar de los encantos de la selva. "
-            f"A continuación te presento los atractivos y experiencias más recomendadas para tu visita:"
-        )
-    else:
-        reply = (
-            "🌿 ¡Hola! Conozco los 297 atractivos oficiales de la región San Martín, sus distancias, costos y dificultades. "
-            "¿Qué tipo de viaje tienes en mente: cataratas, lagunas, aventura o gastronomía?"
-        )
+    actions = list(dict.fromkeys(actions))[:4]
 
     return ChatResponse(
         reply=reply,
