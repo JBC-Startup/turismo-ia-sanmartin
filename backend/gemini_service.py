@@ -479,3 +479,68 @@ async def consultar_gemini(
 
         raise RuntimeError(f"Gemini API no devolvió una respuesta válida (código: {last_error_code}).")
 
+
+async def transcribir_audio_gemini(audio_bytes: bytes, mime_type: str = "audio/webm") -> str:
+    """
+    Transcribe audio de voz a texto en español utilizando Google Gemini API multimodal.
+    Universalmente compatible con grabaciones directas del navegador (.webm, .wav, .ogg, .mp3).
+    """
+    import base64
+
+    api_key = settings.GEMINI_API_KEY
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY no está configurada en el backend.")
+
+    audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+    clean_mime = mime_type.split(";")[0].strip() if mime_type else "audio/webm"
+
+    url = f"{GEMINI_API_BASE_URL}/gemini-flash-lite-latest:generateContent"
+    headers = {
+        "x-goog-api-key": api_key,
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": (
+                            "Transcribe fielmente lo que se dice en este audio en español. "
+                            "Devuelve única y exclusivamente el texto transcrito en texto plano. "
+                            "No agregues comillas, ni explicaciones, ni formato Markdown. "
+                            "Si el audio es inaudible o contiene solo ruido de fondo, responde exactamente: VACIO"
+                        )
+                    },
+                    {
+                        "inline_data": {
+                            "mime_type": clean_mime,
+                            "data": audio_b64,
+                        }
+                    },
+                ]
+            }
+        ]
+    }
+
+    async with httpx.AsyncClient(timeout=25.0) as client:
+        response = await client.post(url, headers=headers, json=payload)
+        if response.status_code != 200:
+            logger.warning("Gemini multimodal audio (%d): %s", response.status_code, response.text[:200])
+            return ""
+
+        data = response.json()
+        candidates = data.get("candidates", [])
+        if not candidates:
+            return ""
+
+        parts = candidates[0].get("content", {}).get("parts", [])
+        if not parts:
+            return ""
+
+        transcribed = parts[0].get("text", "").strip()
+        if transcribed.upper() == "VACIO" or transcribed.upper() == "VACÍO":
+            return ""
+
+        return transcribed.strip('"\'')
+
+
