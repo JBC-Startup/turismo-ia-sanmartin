@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 import unicodedata
 from decimal import Decimal
@@ -643,8 +644,8 @@ async def consultar_gemini(
 
 async def procesar_consulta_asistente(
     message: str,
-    context: Optional[dict[str, Any]],
-    engine: Any,
+    context: Optional[dict[str, Any] | str],
+    catalogo: Optional[pd.DataFrame],
 ) -> ChatResponse:
     """
     Motor conversacional de TurismoIA San Martín:
@@ -816,3 +817,41 @@ async def procesar_consulta_asistente(
         suggested_actions=actions,
         related_atractivos=related,
     )
+
+
+async def procesar_consulta_asistente(
+    message: str,
+    context: Optional[dict[str, Any]] = None,
+    session_id: Optional[str] = None,
+    engine: Any = None,
+) -> ChatResponse:
+    """
+    Motor conversacional de TurismoIA San Martín:
+    - Analiza cada mensaje del turista mediante Google Gemini API en tiempo real.
+    - Respuestas generadas de forma dinámica, iterativa y personalizada por la IA.
+    - Fallback heurístico solo si Gemini experimenta agotamiento de cuota o indisponibilidad de red.
+    """
+    catalogo = getattr(engine, "catalogo", None) if engine else None
+
+    # Enviar absolutamente cada mensaje a Gemini API para su análisis generativo en tiempo real
+    gemini_key = getattr(settings, "GEMINI_API_KEY", None)
+    if gemini_key and gemini_key.strip() and not gemini_key.startswith("tu_gemini_api_key"):
+        try:
+            reply_text, actions, related = await consultar_gemini(
+                message=message,
+                context=context,
+                catalogo=catalogo,
+                session_id=session_id,
+            )
+            return ChatResponse(
+                reply=reply_text,
+                suggested_actions=actions,
+                related_atractivos=related,
+            )
+        except Exception as exc:
+            logger.warning("Fallo al consultar Gemini API (%s), utilizando contingencia local.", exc)
+            return _respuesta_local_fallback(message=message, context=context, catalogo=catalogo)
+
+    # Si no hay API Key configurada, usar contingencia local
+    return _respuesta_local_fallback(message=message, context=context, catalogo=catalogo)
+

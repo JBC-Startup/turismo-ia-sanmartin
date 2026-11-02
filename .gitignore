@@ -18,6 +18,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .ipynb_checkpoints/
+.cache/
+**/.cache/
 
 # Environment files with credentials
 .env

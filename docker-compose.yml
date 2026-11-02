@@ -40,6 +40,12 @@ services:
       DB_SCHEMA: turismo
       MODEL_PATH: /app/ml_engine/models/modelo_recomendador_sanmartin.pkl
       PYTHONPATH: /app/ml_engine:/app/backend
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-lite-latest}
+      GEMINI_TIMEOUT_SECONDS: ${GEMINI_TIMEOUT_SECONDS:-15.0}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      ELEVENLABS_VOICE_ID: ${ELEVENLABS_VOICE_ID:-nPczCjzI2devNBz1zQrb}
+      ELEVENLABS_MODEL_ID: ${ELEVENLABS_MODEL_ID:-eleven_multilingual_v2}
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:

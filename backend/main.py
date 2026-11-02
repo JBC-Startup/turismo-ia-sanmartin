@@ -21,6 +21,7 @@ from schemas import (
     MetricasPrototipoResponse,
     PreferenciaRequest,
     RecomendacionResponse,
+    TTSRequest,
     ValoracionRequest,
     ValoracionResponse,
 )
@@ -512,13 +513,47 @@ async def obtener_metricas_prototipo(db: AsyncSession = Depends(get_db)) -> Metr
     tags=["Asistente IA"],
 )
 async def chat_asistente(chat_req: ChatRequest) -> ChatResponse:
-    """Procesa consultas en lenguaje natural de los turistas usando el catálogo, modelo ML y Gemini AI."""
+    """Procesa consultas en lenguaje natural de los turistas usando Gemini API y el catálogo de San Martín."""
     engine = getattr(app.state, "engine", None)
     return await procesar_consulta_asistente(
         message=chat_req.message,
         context=chat_req.context,
+        session_id=chat_req.session_id,
         engine=engine,
     )
+
+
+@app.post(
+    "/api/tts",
+    summary="Síntesis de voz con ElevenLabs TTS (Audio streaming MP3)",
+    tags=["Asistente IA"],
+)
+@app.post(
+    "/assistant/tts",
+    summary="Síntesis de voz con ElevenLabs TTS (alias)",
+    tags=["Asistente IA"],
+)
+async def sintetizar_voz_elevenlabs(payload: TTSRequest):
+    """Sintetiza texto a voz humana con ElevenLabs protegiendo la API Key en el backend."""
+    try:
+        from tts_service import generar_audio_elevenlabs
+
+        audio_bytes = await generar_audio_elevenlabs(
+            texto=payload.text,
+            voice_id=payload.voice_id,
+        )
+        return Response(content=audio_bytes, media_type="audio/mpeg")
+    except ValueError as val_err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(val_err),
+        )
+    except Exception as exc:
+        logger.error("Error al sintetizar voz con ElevenLabs: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Fallo en la síntesis de voz con ElevenLabs: {exc}",
+        )
 
 
 
