@@ -556,6 +556,34 @@ async def sintetizar_voz_elevenlabs(payload: TTSRequest):
         )
 
 
+@app.post(
+    "/api/stt",
+    summary="Transcripción de voz a texto (Speech-to-Text) multimodal con Gemini",
+    tags=["Asistente IA"],
+)
+@app.post(
+    "/assistant/stt",
+    summary="Transcripción de voz a texto (alias)",
+    tags=["Asistente IA"],
+)
+async def transcribir_voz(request: Request):
+    """Transcribe grabaciones de voz del micrófono a texto en español mediante Gemini multimodal."""
+    try:
+        from gemini_service import transcribir_audio_gemini
+
+        audio_bytes = await request.body()
+        if not audio_bytes or len(audio_bytes) < 700:
+            return {"text": ""}
+
+        mime_type = request.headers.get("content-type") or "audio/webm"
+        texto = await transcribir_audio_gemini(audio_bytes=audio_bytes, mime_type=mime_type)
+        return {"text": texto}
+    except Exception as exc:
+        logger.error("Error al transcribir voz: %s", exc)
+        return {"text": ""}
+
+
+
 
 @app.get(
     "/",
