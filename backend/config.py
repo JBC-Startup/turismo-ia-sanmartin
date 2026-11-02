@@ -55,11 +55,11 @@ class Settings(BaseSettings):
             return v.lower() in ("true", "1", "t", "yes", "y", "debug")
         return bool(v)
 
-    # Configuración de Pydantic v2 Settings
+    # Configuración de Pydantic v2 Settings (Prioriza .env maestro de la raíz)
     model_config = SettingsConfigDict(
         env_file=(
-            PROJECT_ROOT / ".env",
-            BACKEND_DIR / ".env",
+            PROJECT_ROOT.parent / ".env",  # .env maestro en la raíz monorepo
+            PROJECT_ROOT / ".env",         # .env local en caso de ejecución independiente
         ),
         env_file_encoding="utf-8",
         extra="ignore",
@@ -75,6 +75,16 @@ class Settings(BaseSettings):
             except Exception:
                 url = url.replace("@db:5432", "@localhost:5434").replace("@db:", "@localhost:")
         return url
+
+    @property
+    def effective_gemini_api_key(self) -> Optional[str]:
+        key = (self.GEMINI_API_KEY or "").strip()
+        if key:
+            return key
+        env_key = os.environ.get("GEMINI_API_KEY", "").strip()
+        if env_key:
+            return env_key
+        return None
 
     def get_resolved_model_path(self) -> Path:
         """

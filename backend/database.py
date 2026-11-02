@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import time
@@ -26,6 +27,7 @@ engine_kwargs: dict[str, Any] = {
     "echo": settings.DEBUG,
     "poolclass": pool_class,
     "connect_args": {
+        "timeout": 2.0,
         "server_settings": {
             "search_path": f"{settings.DB_SCHEMA},public"
         }
@@ -80,7 +82,10 @@ async def check_db_connectivity() -> dict[str, Any]:
     t0 = time.perf_counter()
     try:
         async with AsyncSessionLocal() as session:
-            result = await session.execute(text("SELECT version(), count(*) FROM turismo.atractivo"))
+            result = await asyncio.wait_for(
+                session.execute(text("SELECT version(), count(*) FROM turismo.atractivo")),
+                timeout=1.0,
+            )
             row = result.fetchone()
             latency_ms = round((time.perf_counter() - t0) * 1000, 2)
             db_version = row[0] if row else "Desconocido"
@@ -95,7 +100,7 @@ async def check_db_connectivity() -> dict[str, Any]:
             }
     except Exception as exc:
         latency_ms = round((time.perf_counter() - t0) * 1000, 2)
-        logger.error("Error al comprobar conectividad con PostgreSQL: %s", exc)
+        logger.debug("PostgreSQL no disponible en /health: %s", exc)
         return {
             "connected": False,
             "latency_ms": latency_ms,

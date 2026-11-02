@@ -261,9 +261,9 @@ def _extraer_suggested_actions(gemini_text: str, default_actions: list[str]) -> 
         lineas_sug = partes[1].strip().splitlines()
         for line in lineas_sug:
             stripped = line.strip()
-            if stripped.startswith(("- ", "* ", "1. ", "2. ", "3. ")):
+            if stripped:
                 sug = re.sub(r"^[-*0-9.]+\s*", "", stripped).strip()
-                if 5 < len(sug) < 120:
+                if 5 < len(sug) < 120 and (stripped.startswith(("- ", "* ")) or re.match(r"^\d+\.\s+", stripped) or sug.endswith("?")):
                     actions.append(sug)
     else:
         # Fallback de extracción de viñetas interrogativas al final
@@ -295,6 +295,7 @@ async def consultar_gemini(
     api_key: Optional[str] = None,
     model: Optional[str] = None,
     timeout_seconds: Optional[float] = None,
+    history: Optional[list[dict[str, str]]] = None,
 ) -> tuple[str, list[str], list[dict[str, Any]]]:
     """
     Envía una consulta a Google Gemini API utilizando el nivel gratuito (Free Tier).
@@ -306,8 +307,8 @@ async def consultar_gemini(
     - 404: Modelo no disponible (ej. deprecado para usuarios nuevos) -> Notificación o fallback controlado.
     - Otros: Mensaje controlado sin filtrar datos confidenciales ni API keys.
     """
-    key = api_key or settings.GEMINI_API_KEY
-    if not key or key.strip() == "" or key.startswith("tu_gemini_api_key"):
+    key = api_key or getattr(settings, "effective_gemini_api_key", settings.GEMINI_API_KEY) or settings.GEMINI_API_KEY
+    if not key or not key.strip() or key.startswith("tu_gemini_api_key"):
         raise ValueError("GEMINI_API_KEY no está configurada en las variables de entorno.")
 
     modelo_solicitado = model or settings.GEMINI_MODEL or "gemini-3.8-flash"
@@ -326,14 +327,24 @@ async def consultar_gemini(
     ]
 
     # 2. Construir historial de conversación interactiva
-    historial_previo = obtener_historial_sesion(session_id, limit=6)
     contents: list[dict[str, Any]] = []
 
-    for turn in historial_previo:
-        contents.append({
-            "role": turn["role"],
-            "parts": [{"text": turn["text"]}],
-        })
+    if history:
+        for turn in history[-6:]:
+            role = "user" if turn.get("role") == "user" else "model"
+            text_val = str(turn.get("content") or turn.get("text") or "").strip()
+            if text_val:
+                contents.append({
+                    "role": role,
+                    "parts": [{"text": text_val}],
+                })
+    else:
+        historial_previo = obtener_historial_sesion(session_id, limit=6)
+        for turn in historial_previo:
+            contents.append({
+                "role": turn["role"],
+                "parts": [{"text": turn["text"]}],
+            })
 
     contents.append({
         "role": "user",

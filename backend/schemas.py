@@ -287,11 +287,18 @@ class MetricasPrototipoResponse(BaseModel):
     pct_cobertura_catalogo: Optional[float] = None
 
 
+class ChatMessageItem(BaseModel):
+    """Mensaje previo del historial conversacional."""
+    role: str = Field(..., description="Rol del emisor: 'user' o 'assistant'")
+    content: str = Field(..., description="Texto del mensaje")
+
+
 class ChatRequest(BaseModel):
     """Payload para dialogar con el asistente/guía de exploración IA."""
     message: str = Field(..., description="Pregunta o consulta en lenguaje natural del turista", examples=["¿Qué cataratas puedo visitar en Tarapoto?"])
     context: Optional[dict[str, Any]] = Field(default=None, description="Contexto del destino o vista activa")
     session_id: Optional[str] = Field(default=None, description="ID de sesión para mantener hilo conversacional")
+    history: Optional[list[ChatMessageItem]] = Field(default=None, description="Historial reciente de la conversación")
 
 
 class ChatResponse(BaseModel):
