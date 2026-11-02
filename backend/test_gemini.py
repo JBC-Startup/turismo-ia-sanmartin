@@ -94,7 +94,7 @@ async def test_configuracion_gemini_cargada():
     """Verifica que las variables de configuración de Gemini existan en settings."""
     assert hasattr(settings, "GEMINI_API_KEY")
     assert hasattr(settings, "GEMINI_MODEL")
-    assert settings.GEMINI_MODEL in ("gemini-2.5-flash", "gemini-3.8-flash", "gemini-flash-lite-latest")
+    assert settings.GEMINI_MODEL in ("gemini-2.5-flash", "gemini-3.8-flash", "gemini-flash-lite-latest", "gemini-3.5-flash-lite")
 
 
 @pytest.mark.asyncio
