@@ -1,6 +1,8 @@
 import os
 import sys
 from pathlib import Path
+from typing import Any, Optional, Union
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Ubicación base del proyecto
@@ -28,17 +30,36 @@ class Settings(BaseSettings):
     # Modelo Recomendador de Machine Learning
     MODEL_PATH: str = "../ml_engine/models/modelo_recomendador_sanmartin.pkl"
 
+    # Integración con Google Gemini API
+    GEMINI_API_KEY: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-flash-lite-latest"
+    GEMINI_TIMEOUT_SECONDS: float = 15.0
+
+    # Integración con ElevenLabs Text-to-Speech
+    ELEVENLABS_API_KEY: Optional[str] = None
+    ELEVENLABS_VOICE_ID: str = "nPczCjzI2devNBz1zQrb"
+    ELEVENLABS_MODEL_ID: str = "eleven_multilingual_v2"
+
     # API Metadata
     PROJECT_NAME: str = "TurismoIA San Martín API"
     VERSION: str = "1.0.0"
     API_V1_PREFIX: str = "/api"
     DEBUG: bool = False
 
-    # Configuración de Pydantic v2 Settings
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def parse_debug(cls, v: Any) -> bool:
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "t", "yes", "y", "debug")
+        return bool(v)
+
+    # Configuración de Pydantic v2 Settings (Prioriza .env maestro de la raíz)
     model_config = SettingsConfigDict(
         env_file=(
-            PROJECT_ROOT / ".env",
-            BACKEND_DIR / ".env",
+            PROJECT_ROOT.parent / ".env",  # .env maestro en la raíz monorepo
+            PROJECT_ROOT / ".env",         # .env local en caso de ejecución independiente
         ),
         env_file_encoding="utf-8",
         extra="ignore",
@@ -54,6 +75,16 @@ class Settings(BaseSettings):
             except Exception:
                 url = url.replace("@db:5432", "@localhost:5434").replace("@db:", "@localhost:")
         return url
+
+    @property
+    def effective_gemini_api_key(self) -> Optional[str]:
+        key = (self.GEMINI_API_KEY or "").strip()
+        if key:
+            return key
+        env_key = os.environ.get("GEMINI_API_KEY", "").strip()
+        if env_key:
+            return env_key
+        return None
 
     def get_resolved_model_path(self) -> Path:
         """

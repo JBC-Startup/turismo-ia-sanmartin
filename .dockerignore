@@ -18,6 +18,8 @@ venv/
 
 # Archivos de entorno y logs locales
 **/*.log
+.env
+**/.env
 **/.env.local
 
 # Archivos pesados no necesarios para inferencia en producción

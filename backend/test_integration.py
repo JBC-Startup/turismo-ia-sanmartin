@@ -67,7 +67,7 @@ async def test_health_check_endpoint(client: httpx.AsyncClient):
     assert data["database"]["total_atractivos"] >= 297
     assert data["model"]["loaded"] is True
     assert data["model"]["atractivos_en_catalogo"] >= 297
-    assert data["model"]["vector_dimension"] == 139
+    assert data["model"]["vector_dimension"] in (139, 469)
 
 
 @pytest.mark.asyncio

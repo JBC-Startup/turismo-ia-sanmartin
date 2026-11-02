@@ -32,6 +32,7 @@ import pandas as pd
 import scipy.sparse as sp
 from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import cosine_similarity
+import unicodedata
 
 from src.feature_engineering import TurismoFeaturePipeline
 
@@ -42,6 +43,13 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+def normalizar_texto(texto: Any) -> str:
+    """Elimina tildes/acentos y normaliza a mayúsculas sin espacios extra."""
+    if pd.isna(texto) or texto is None:
+        return ""
+    nfkd = unicodedata.normalize('NFKD', str(texto))
+    return "".join([c for c in nfkd if not unicodedata.combining(c)]).strip().upper()
 
 # Etiquetas descriptivas de macro-experiencias para los clusters
 CLUSTER_LABELS: dict[int, str] = {
@@ -213,23 +221,36 @@ class TurismoRecommender:
         tiempo_max = float(perfil_usuario.get("tiempo_disponible_horas", perfil_usuario.get("tiempo", 8.0)))
         presupuesto_max = float(perfil_usuario.get("presupuesto_max_pen", perfil_usuario.get("presupuesto", 100.0)))
         dificultad = str(perfil_usuario.get("nivel_dificultad", perfil_usuario.get("dificultad", "Media"))).strip().capitalize()
-        provincia_in = str(perfil_usuario.get("provincia", "Todas")).strip()
+        provincia_raw = str(perfil_usuario.get("provincia", "Todas")).strip()
+        provincia_in = normalizar_texto(provincia_raw)
         publico = str(perfil_usuario.get("publico", perfil_usuario.get("publico_recomendado", "Todos"))).strip().capitalize()
 
         # Determinar si la provincia es específica o genérica
-        filtro_prov_activo = provincia_in.upper() not in ["TODAS", "TODOS", "CUALQUIERA", ""]
-        provincia_para_ohe = provincia_in.upper() if filtro_prov_activo else "DESCONOCIDA"
+        filtro_prov_activo = provincia_in not in ["TODAS", "TODOS", "CUALQUIERA", ""]
+        provincia_para_ohe = provincia_in if filtro_prov_activo else "DESCONOCIDA"
+
+        # Inferencia de pistas temáticas para categoría
+        intereses_lower = normalizar_texto(intereses).lower()
+        categoria_hint = ""
+        if any(w in intereses_lower for w in ["catarata", "cascada", "laguna", "bosque", "naturaleza", "paisaje", "senderismo"]):
+            categoria_hint = "SITIOS NATURALES"
+        elif any(w in intereses_lower for w in ["cultura", "historia", "tradicion", "artesania", "templo", "museo", "castillo", "comunidad", "nativas"]):
+            categoria_hint = "MANIFESTACIONES CULTURALES"
+        elif any(w in intereses_lower for w in ["gastronomia", "cacao", "chocolate", "cafe", "sabores", "comida", "degustacion", "juane"]):
+            categoria_hint = "REALIZACIONES TECNICAS CIENTIFICAS Y ARTISTICAS CONTEMPORANEAS FOLCLORE"
+
+        publico_ohe = "Todos" if publico in ["Todos", "Amigos", ""] else publico
 
         # a) Construir el registro de usuario para la proyección vectorial
         user_row = pd.DataFrame([{
-            "categoria": "",
+            "categoria": categoria_hint,
             "tipo": "",
             "subtipo": "",
             "etiquetas_interes": intereses,
-            "descripcion_corta": intereses,
+            "descripcion_corta": f"{categoria_hint} {intereses}".strip(),
             "nivel_dificultad": dificultad,
             "provincia": provincia_para_ohe,
-            "publico_recomendado": publico,
+            "publico_recomendado": publico_ohe,
             "duracion_estimada_horas": min(tiempo_max, 7.0),
             "costo_referencial_pen": min(presupuesto_max, 40.0),
         }])
@@ -243,11 +264,11 @@ class TurismoRecommender:
         df_candidates["afinidad_score"] = similitudes
         df_candidates["afinidad_pct"] = (similitudes * 100.0).round(2)
 
-        # c) Aplicación de Filtros Duros
+        # c) Aplicación de Filtros Duros con normalización
         mask_tiempo = df_candidates["duracion_estimada_horas"] <= tiempo_max
         mask_costo = df_candidates["costo_referencial_pen"] <= presupuesto_max
         mask_prov = (
-            df_candidates["provincia"].str.upper() == provincia_in.upper()
+            df_candidates["provincia"].apply(normalizar_texto) == provincia_in
             if filtro_prov_activo
             else pd.Series(True, index=df_candidates.index)
         )
@@ -328,13 +349,13 @@ class TurismoRecommender:
 
         tiempo_max = float(perfil_usuario.get("tiempo_disponible_horas", perfil_usuario.get("tiempo", 8.0)))
         presupuesto_max = float(perfil_usuario.get("presupuesto_max_pen", perfil_usuario.get("presupuesto", 100.0)))
-        provincia = str(perfil_usuario.get("provincia", "Todas")).strip().upper()
+        provincia = normalizar_texto(perfil_usuario.get("provincia", "Todas"))
 
         cumple_tiempo = bool((df_top["duracion_estimada_horas"] <= tiempo_max).all())
         cumple_costo = bool((df_top["costo_referencial_pen"] <= presupuesto_max).all())
 
         if provincia not in ["TODAS", "TODOS", "CUALQUIERA", ""]:
-            cumple_prov = bool((df_top["provincia"].str.upper() == provincia).all())
+            cumple_prov = bool((df_top["provincia"].apply(normalizar_texto) == provincia).all())
         else:
             cumple_prov = True
 

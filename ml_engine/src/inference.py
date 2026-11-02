@@ -28,6 +28,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
+import unicodedata
 
 from src.feature_engineering import TurismoFeaturePipeline
 
@@ -38,6 +39,14 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+
+def normalizar_texto(texto: Any) -> str:
+    """Elimina tildes/acentos y normaliza a mayúsculas sin espacios extra."""
+    if pd.isna(texto) or texto is None:
+        return ""
+    nfkd = unicodedata.normalize('NFKD', str(texto))
+    return "".join([c for c in nfkd if not unicodedata.combining(c)]).strip().upper()
 
 
 class InferenceEngine:
@@ -143,22 +152,36 @@ class InferenceEngine:
         tiempo_max = float(perfil_dict.get("tiempo_disponible_horas", perfil_dict.get("tiempo", 8.0)))
         presupuesto_max = float(perfil_dict.get("presupuesto_max_pen", perfil_dict.get("presupuesto", 100.0)))
         dificultad = str(perfil_dict.get("nivel_dificultad", perfil_dict.get("dificultad", "Media"))).strip().capitalize()
-        provincia_in = str(perfil_dict.get("provincia", "Todas")).strip()
+        provincia_raw = str(perfil_dict.get("provincia", "Todas")).strip()
+        provincia_in = normalizar_texto(provincia_raw)
         publico = str(perfil_dict.get("publico", perfil_dict.get("publico_recomendado", "Todos"))).strip().capitalize()
 
-        filtro_prov_activo = provincia_in.upper() not in ["TODAS", "TODOS", "CUALQUIERA", ""]
-        provincia_ohe = provincia_in.upper() if filtro_prov_activo else "DESCONOCIDA"
+        filtro_prov_activo = provincia_in not in ["TODAS", "TODOS", "CUALQUIERA", ""]
+        provincia_ohe = provincia_in if filtro_prov_activo else "DESCONOCIDA"
+
+        # Inferencia de pistas temáticas para enriquecer vectorización semántica
+        intereses_lower = normalizar_texto(intereses).lower()
+        categoria_hint = ""
+        if any(w in intereses_lower for w in ["catarata", "cascada", "laguna", "bosque", "naturaleza", "paisaje", "senderismo"]):
+            categoria_hint = "SITIOS NATURALES"
+        elif any(w in intereses_lower for w in ["cultura", "historia", "tradicion", "artesania", "templo", "museo", "castillo", "comunidad", "nativas"]):
+            categoria_hint = "MANIFESTACIONES CULTURALES"
+        elif any(w in intereses_lower for w in ["gastronomia", "cacao", "chocolate", "cafe", "sabores", "comida", "degustacion", "juane"]):
+            categoria_hint = "REALIZACIONES TECNICAS CIENTIFICAS Y ARTISTICAS CONTEMPORANEAS FOLCLORE"
+
+        # Público recomendado: la mayoría del catálogo está clasificado como "Todos", por lo que es apto para cualquier grupo
+        publico_ohe = "Todos" if publico in ["Todos", "Amigos", ""] else publico
 
         # 2. Vectorización ultrarrápida del perfil
         user_row = pd.DataFrame([{
-            "categoria": "",
+            "categoria": categoria_hint,
             "tipo": "",
             "subtipo": "",
             "etiquetas_interes": intereses,
-            "descripcion_corta": intereses,
+            "descripcion_corta": f"{categoria_hint} {intereses}".strip(),
             "nivel_dificultad": dificultad,
             "provincia": provincia_ohe,
-            "publico_recomendado": publico,
+            "publico_recomendado": publico_ohe,
             "duracion_estimada_horas": min(tiempo_max, 7.0),
             "costo_referencial_pen": min(presupuesto_max, 40.0),
         }])
@@ -168,11 +191,11 @@ class InferenceEngine:
         # 3. Similitud del Coseno
         sims = cosine_similarity(user_vec, self.X_global).flatten()
 
-        # 4. Filtros duros obligatorios
+        # 4. Filtros duros obligatorios con normalización de caracteres
         mask_tiempo = self.catalogo["duracion_estimada_horas"] <= tiempo_max
         mask_costo = self.catalogo["costo_referencial_pen"] <= presupuesto_max
         mask_prov = (
-            self.catalogo["provincia"].str.upper() == provincia_in.upper()
+            self.catalogo["provincia"].apply(normalizar_texto) == provincia_in
             if filtro_prov_activo
             else pd.Series(True, index=self.catalogo.index)
         )

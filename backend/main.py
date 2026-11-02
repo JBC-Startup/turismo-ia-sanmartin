@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -21,6 +22,7 @@ from schemas import (
     MetricasPrototipoResponse,
     PreferenciaRequest,
     RecomendacionResponse,
+    TTSRequest,
     ValoracionRequest,
     ValoracionResponse,
 )
@@ -87,9 +89,12 @@ async def lifespan(app: FastAPI):
     catalog_cache.load_from_catalogo(engine.catalogo, cluster_metadata=engine.cluster_metadata)
     try:
         async with AsyncSessionLocal() as session:
-            await catalog_cache.load(session, cluster_metadata=engine.cluster_metadata)
+            await asyncio.wait_for(
+                catalog_cache.load(session, cluster_metadata=engine.cluster_metadata),
+                timeout=1.0,
+            )
     except Exception as exc:
-        logger.warning("PostgreSQL no disponible para sincronizar IDs (%s). Operando en memoria con catálogo oficial.", exc)
+        logger.warning("PostgreSQL no disponible o no responde a tiempo (%s). Operando en memoria con catálogo oficial.", exc)
     app.state.catalog_cache = catalog_cache
 
     yield
@@ -117,7 +122,15 @@ app = FastAPI(
 # Middleware CORS para permitir integración frontend (Web y Móvil)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "*",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -512,13 +525,49 @@ async def obtener_metricas_prototipo(db: AsyncSession = Depends(get_db)) -> Metr
     tags=["Asistente IA"],
 )
 async def chat_asistente(chat_req: ChatRequest) -> ChatResponse:
-    """Procesa consultas en lenguaje natural de los turistas usando el catálogo y modelo de San Martín."""
+    """Procesa consultas en lenguaje natural de los turistas usando Gemini API y el catálogo de San Martín."""
     engine = getattr(app.state, "engine", None)
-    return procesar_consulta_asistente(
+    history_list = [h.model_dump() for h in chat_req.history] if chat_req.history else None
+    return await procesar_consulta_asistente(
         message=chat_req.message,
         context=chat_req.context,
+        session_id=chat_req.session_id,
         engine=engine,
+        history=history_list,
     )
+
+
+@app.post(
+    "/api/tts",
+    summary="Síntesis de voz con ElevenLabs TTS (Audio streaming MP3)",
+    tags=["Asistente IA"],
+)
+@app.post(
+    "/assistant/tts",
+    summary="Síntesis de voz con ElevenLabs TTS (alias)",
+    tags=["Asistente IA"],
+)
+async def sintetizar_voz_elevenlabs(payload: TTSRequest):
+    """Sintetiza texto a voz humana con ElevenLabs protegiendo la API Key en el backend."""
+    try:
+        from tts_service import generar_audio_elevenlabs
+
+        audio_bytes = await generar_audio_elevenlabs(
+            texto=payload.text,
+            voice_id=payload.voice_id,
+        )
+        return Response(content=audio_bytes, media_type="audio/mpeg")
+    except ValueError as val_err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(val_err),
+        )
+    except Exception as exc:
+        logger.error("Error al sintetizar voz con ElevenLabs: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Fallo en la síntesis de voz con ElevenLabs: {exc}",
+        )
 
 
 
