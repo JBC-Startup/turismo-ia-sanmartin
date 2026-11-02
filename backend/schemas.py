@@ -300,3 +300,9 @@ class ChatResponse(BaseModel):
     suggested_actions: list[str] = Field(default_factory=list, description="Preguntas o acciones sugeridas")
     related_atractivos: list[dict[str, Any]] = Field(default_factory=list, description="Atractivos específicos recomendados relacionados con la consulta")
 
+
+class TTSRequest(BaseModel):
+    """Payload para generar síntesis de voz con ElevenLabs TTS."""
+    text: str = Field(..., max_length=2500, description="Texto en español a sintetizar con ElevenLabs", examples=["¡Hola explorador! Bienvenidos a San Martín."])
+    voice_id: Optional[str] = Field(default=None, description="Voice ID de ElevenLabs opcional para override")
+
