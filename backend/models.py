@@ -83,6 +83,21 @@ class Atractivo(Base):
     fecha_actualizacion: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class AtractivoImagen(Base):
+    __tablename__ = "atractivo_imagen"
+    __table_args__ = {"schema": "turismo"}
+
+    id_imagen: Mapped[int] = mapped_column(Integer, Identity(), primary_key=True)
+    id_atractivo: Mapped[int] = mapped_column(Integer, ForeignKey("turismo.atractivo.id_atractivo", ondelete="CASCADE"), nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    texto_alternativo: Mapped[str] = mapped_column(String(200), nullable=False)
+    credito: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
+    tipo: Mapped[str] = mapped_column(String(10), default="normal", nullable=False)
+    es_principal: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    orden: Mapped[int] = mapped_column(SmallInteger, default=1, nullable=False)
+    id_fuente: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+
 class ModeloVersion(Base):
     __tablename__ = "modelo_version"
     __table_args__ = {"schema": "turismo"}

@@ -258,18 +258,19 @@ CREATE TABLE fuente_dato (
 );
 CREATE INDEX ix_fuente_dato_atractivo ON fuente_dato (id_atractivo);
 
--- 5.6 Imágenes
+-- 5.6 Imágenes (normales y panorámicas 360°)
 CREATE TABLE atractivo_imagen (
     id_imagen          INTEGER       GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     id_atractivo       INTEGER       NOT NULL REFERENCES atractivo ON DELETE CASCADE,
     url                TEXT          NOT NULL CHECK (url ~* '^https?://'),
     texto_alternativo  VARCHAR(200)  NOT NULL,                    -- accesibilidad (RNF-09)
     credito            VARCHAR(150),
+    tipo               VARCHAR(10)   NOT NULL DEFAULT 'normal' CHECK (tipo IN ('normal', '360')),
     es_principal       BOOLEAN       NOT NULL DEFAULT FALSE,
     orden              SMALLINT      NOT NULL DEFAULT 1 CHECK (orden >= 1),
     id_fuente          INTEGER       REFERENCES fuente ON DELETE SET NULL
 );
-CREATE UNIQUE INDEX ux_imagen_principal ON atractivo_imagen (id_atractivo) WHERE es_principal;
+CREATE UNIQUE INDEX ux_imagen_principal ON atractivo_imagen (id_atractivo, tipo) WHERE es_principal;
 
 -- 5.7 Auditoría de cambios (historial_actualizacion)
 CREATE TABLE historial_actualizacion (
@@ -617,11 +618,16 @@ SELECT a.id_atractivo,
           FROM atractivo_compania ac JOIN compania_viaje cv USING (id_compania)
          WHERE ac.id_atractivo = a.id_atractivo)            AS publico_recomendado,
        (SELECT im.url FROM atractivo_imagen im
-         WHERE im.id_atractivo = a.id_atractivo AND im.es_principal) AS imagen_principal,
+         WHERE im.id_atractivo = a.id_atractivo AND im.es_principal AND im.tipo = 'normal') AS imagen_principal,
        e.requiere_validacion,
        e.fecha_verificacion,
        a.fecha_corte,
-       a.activo
+       a.activo,
+       (SELECT im.url FROM atractivo_imagen im
+         WHERE im.id_atractivo = a.id_atractivo AND im.es_principal AND im.tipo = '360') AS imagen_360,
+       (SELECT coalesce(array_agg(im.url ORDER BY im.orden, im.id_imagen), ARRAY[]::text[])
+          FROM atractivo_imagen im
+         WHERE im.id_atractivo = a.id_atractivo AND NOT im.es_principal AND im.tipo = 'normal') AS imagenes_secundarias
 FROM atractivo a
 JOIN subtipo st        ON st.id_subtipo = a.id_subtipo
 JOIN tipo t            ON t.id_tipo = st.id_tipo

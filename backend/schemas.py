@@ -133,6 +133,7 @@ class RecomendacionItem(BaseModel):
     cluster_label: str = Field(..., description="Etiqueta descriptiva del perfil de cluster")
     explicacion: str = Field(..., description="Justificación inteligible generada por el motor (XAI)")
     imagen_url: Optional[str] = Field(None, description="URL de la fotografía representativa")
+    imagen_360: Optional[str] = Field(None, description="URL de la fotografía panorámica 360°")
     cumple_filtros: bool = Field(True, description="Indica si cumplió todos los filtros estrictos")
 
     model_config = ConfigDict(from_attributes=True)
@@ -261,6 +262,8 @@ class AtractivoDetalle(BaseModel):
     etiquetas: Optional[str] = None
     publico_recomendado: Optional[str] = None
     imagen_principal: Optional[str] = None
+    imagen_360: Optional[str] = None
+    imagenes_secundarias: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 

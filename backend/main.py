@@ -336,7 +336,7 @@ async def listar_atractivos(
                    departamento, provincia, distrito, ubigeo, latitud, longitud, estado,
                    descripcion_corta, duracion_horas, costo_min_pen, costo_max_pen, es_gratuito,
                    costo_texto, dificultad, accesibilidad, horario, temporada, etiquetas,
-                   publico_recomendado, imagen_principal
+                   publico_recomendado, imagen_principal, imagen_360, imagenes_secundarias
             FROM turismo.v_catalogo
             {where_clause}
             ORDER BY nombre ASC
@@ -424,7 +424,7 @@ async def obtener_atractivo_detalle(
                    departamento, provincia, distrito, ubigeo, latitud, longitud, estado,
                    descripcion_corta, duracion_horas, costo_min_pen, costo_max_pen, es_gratuito,
                    costo_texto, dificultad, accesibilidad, horario, temporada, etiquetas,
-                   publico_recomendado, imagen_principal
+                   publico_recomendado, imagen_principal, imagen_360, imagenes_secundarias
             FROM turismo.v_catalogo
             WHERE id_atractivo = :id
         """
