@@ -49,6 +49,177 @@ def normalizar_texto(texto: Any) -> str:
     return "".join([c for c in nfkd if not unicodedata.combining(c)]).strip().upper()
 
 
+_PROVINCE_DISPLAY: dict[str, str] = {
+    "BELLAVISTA": "Bellavista",
+    "EL DORADO": "El Dorado",
+    "HUALLAGA": "Huallaga",
+    "LAMAS": "Lamas",
+    "MARISCAL CACERES": "Mariscal Cáceres",
+    "MOYOBAMBA": "Moyobamba",
+    "PICOTA": "Picota",
+    "RIOJA": "Rioja",
+    "SAN MARTIN": "San Martín",
+    "TOCACHE": "Tocache",
+}
+
+_LOWERCASE_CONNECTORS = {"de", "del", "la", "las", "el", "los", "y"}
+
+_KEYWORD_PHRASES: dict[str, str] = {
+    "catarata": "cataratas",
+    "cataratas": "cataratas",
+    "cascada": "cascadas",
+    "cascadas": "cascadas",
+    "laguna": "lagunas",
+    "lagunas": "lagunas",
+    "naturaleza": "naturaleza amazónica",
+    "paisaje": "paisajes naturales",
+    "paisajes": "paisajes naturales",
+    "bosque": "bosques",
+    "senderismo": "caminatas por senderos",
+    "trekking": "caminatas de aventura",
+    "aventura": "aventura al aire libre",
+    "aguas": "aguas termales",
+    "termales": "aguas termales",
+    "descanso": "descanso al aire libre",
+    "poza": "pozas naturales",
+    "pozas": "pozas naturales",
+    "banos": "baños naturales",
+    "rio": "ríos y riberas",
+    "rios": "ríos y riberas",
+    "comunidad": "cultura viva",
+    "comunidades": "cultura viva",
+    "nativas": "comunidades locales",
+    "cultura": "cultura local",
+    "historia": "historia regional",
+    "tradicion": "tradiciones locales",
+    "templo": "patrimonio arquitectónico",
+    "templos": "patrimonio arquitectónico",
+    "artesania": "artesanía tradicional",
+    "artesanias": "artesanía tradicional",
+    "castillo": "arquitectura singular",
+    "lamista": "herencia lamista",
+    "gastronomia": "gastronomía regional",
+    "cacao": "cacao amazónico",
+    "chocolate": "chocolate artesanal",
+    "cafe": "café de la región",
+    "juane": "cocina tradicional",
+    "cecina": "cocina tradicional",
+    "mercados": "mercados locales",
+    "sabores": "sabores amazónicos",
+    "amazonicos": "sabores amazónicos",
+    "degustacion": "degustaciones locales",
+    "mirador": "miradores panorámicos",
+    "miradores": "miradores panorámicos",
+}
+
+_SUBTIPO_DISPLAY: dict[str, str] = {
+    "AGRICULTURA": "actividades agrícolas y del campo",
+    "AGUAS TERMALES": "aguas termales",
+    "ALAMEDAS": "paseos y alamedas",
+    "ALFARERIA Y CERAMICA": "alfarería y cerámica tradicional",
+    "AREAS DE CONSERVACION PRIVADA": "áreas de conservación natural",
+    "BOSQUES": "bosques amazónicos",
+    "BOSQUES DE PROTECCION": "bosques protegidos",
+    "BULEVARES": "recorridos urbanos",
+    "CAMINO PINTORESCO": "rutas escénicas",
+    "CANONES": "cañones naturales",
+    "CAPILLA": "patrimonio histórico y religioso",
+    "CASCADAS": "cascadas naturales",
+    "CASTILLO": "arquitectura emblemática",
+    "CATARATAS": "cataratas",
+    "CEMENTERIOS": "patrimonio histórico",
+    "CENTROS DE RESCATE O CONSERVACION": "conservación de fauna y flora",
+    "CENTROS PRODUCTIVOS": "experiencias productivas locales",
+    "CERROS": "cerros y rutas panorámicas",
+    "CUEVAS": "cuevas y cavernas",
+    "DULCES TIPICOS": "dulces y sabores típicos",
+    "FABRICAS": "talleres y producción artesanal",
+    "FESTIVALES": "festivales regionales",
+    "FIESTAS RELIGIOSAS- PATRONALES": "celebraciones tradicionales",
+    "FIESTAS RELIGIOSAS-PATRONALES": "celebraciones tradicionales",
+    "FIESTAS TRADICIONALES(HERRANZA CARNAVALES OTROS)": "fiestas y costumbres locales",
+    "GALERIAS EXPOSITIVA": "galerías de arte y cultura",
+    "GRUTAS": "grutas naturales",
+    "HUMEDALES": "humedales y biodiversidad",
+    "ISLAS": "islas y paisajes fluviales",
+    "JARDINES BOTANICOS Y VIVEROS": "jardines botánicos y orquídeas",
+    "LAGOS": "lagos y espejos de agua",
+    "LAGUNAS": "lagunas naturales",
+    "LUGARES PINTORESCOS DE FLORA Y FAUNA": "observación de flora y fauna",
+    "MANANTIALES": "manantiales de agua clara",
+    "MARIPOSARIOS": "mariposarios y fauna local",
+    "MIRADORES": "miradores panorámicos",
+    "MIRADORES NATURALES": "miradores naturales",
+    "MITOS": "relatos y tradiciones amazónicas",
+    "MUSEOS": "museos y memoria local",
+    "MUSICA Y DANZAS": "música y danzas tradicionales",
+    "OJOS DE AGUA": "ojos de agua naturales",
+    "PAMPAS": "paisajes abiertos",
+    "PARQUES": "parques y áreas verdes",
+    "PARQUES NACIONALES": "parques nacionales y reservas",
+    "PETROGLIFOS (GRABADOS EN PIEDRA)": "petroglifos y arte rupestre",
+    "PINTURA RUPESTRE": "arte rupestre",
+    "PINTURAS": "arte y pintura regional",
+    "PLAZA": "plazas tradicionales",
+    "PLAZAS": "plazas tradicionales",
+    "PLAZUELAS": "plazuelas históricas",
+    "PONGOS": "pongos y cañones fluviales",
+    "PUENTES": "puentes y arquitectura local",
+    "PUERTOS": "embarcaderos y vida fluvial",
+    "QUEBRADAS": "quebradas de agua fresca",
+    "RAPIDOS": "rápidos y aventura fluvial",
+    "RIOS": "ríos amazónicos",
+    "SALAS DE EXHIBICION": "salas culturales y exhibiciones",
+    "SANTUARIOS": "santuarios y reservas",
+    "TEJIDOS(LANAS FIBRAS DE ANIMALES FIBRA VEGETAL. ETC)": "tejidos y textilería artesanal",
+    "TEMPLO": "templos históricos",
+    "TEMPLOS": "templos históricos",
+    "TRADICIONALES": "costumbres y sabores tradicionales",
+    "ZONAS RESERVADAS": "zonas naturales protegidas",
+}
+
+_CATEGORIA_DISPLAY: dict[str, str] = {
+    "SITIOS NATURALES": "entornos naturales",
+    "MANIFESTACIONES CULTURALES": "expresiones culturales",
+    "FOLCLORE": "tradiciones y folclore local",
+    "REALIZACIONES TECNICAS CIENTIFICAS Y ARTISTICAS CONTEMPORANEAS": "espacios productivos y creativos",
+    "ACONTECIMIENTOS PROGRAMADOS": "encuentros y festividades locales",
+}
+
+
+def _format_province(raw_province: Any) -> str:
+    norm = normalizar_texto(raw_province)
+    if not norm:
+        return "San Martín"
+    if norm in _PROVINCE_DISPLAY:
+        return _PROVINCE_DISPLAY[norm]
+    words = norm.lower().split()
+    return " ".join(
+        w if idx > 0 and w in _LOWERCASE_CONNECTORS else w.capitalize()
+        for idx, w in enumerate(words)
+    )
+
+
+def _join_spanish_list(items: list[str]) -> str:
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} y {items[1]}"
+    return f"{', '.join(items[:-1])} y {items[-1]}"
+
+
+def _resolve_experience_phrase(rec_row: pd.Series) -> str:
+    sub_norm = normalizar_texto(rec_row.get("subtipo", ""))
+    if sub_norm and sub_norm != "OTROS" and sub_norm in _SUBTIPO_DISPLAY:
+        return _SUBTIPO_DISPLAY[sub_norm]
+    cat_norm = normalizar_texto(rec_row.get("categoria", ""))
+    if cat_norm in _CATEGORIA_DISPLAY:
+        return _CATEGORIA_DISPLAY[cat_norm]
+    return "experiencias locales en la región"
+
+
 class InferenceEngine:
     """
     Motor autónomo de inferencia para el sistema de recomendación turística.
@@ -92,43 +263,100 @@ class InferenceEngine:
         cluster_label: str,
     ) -> str:
         """
-        Genera una explicación dinámica de negocio (XAI) legible y fundamentada.
+        Genera una explicación dinámica de negocio (XAI) legible y cercana para el viajero.
         """
-        parts = []
+        _ = cluster_label  # Reservado para compatibilidad de firma
+        intereses_raw = str(perfil_dict.get("intereses", ""))
+        user_tokens = [
+            normalizar_texto(w).lower()
+            for w in intereses_raw.replace(",", " ").split()
+            if len(w.strip()) > 2
+        ]
 
-        # 1. Coincidencia semántica con intereses del turista
-        intereses = str(perfil_dict.get("intereses", "")).lower()
-        user_words = [w for w in intereses.replace(",", " ").split() if len(w) > 3]
-
-        item_text = (
+        item_text_norm = normalizar_texto(
             f"{rec_row.get('nombre_recurso', '')} "
             f"{rec_row.get('etiquetas_interes', '')} "
             f"{rec_row.get('subtipo', '')} "
+            f"{rec_row.get('tipo', '')} "
             f"{rec_row.get('categoria', '')} "
             f"{rec_row.get('descripcion_corta', '')}"
         ).lower()
 
-        matched = [w for w in user_words if w in item_text]
-        if matched:
-            unique_matches = list(dict.fromkeys(matched))[:3]
-            parts.append(f"Alineado a tus intereses en {', '.join(unique_matches)}")
+        matched_phrases: list[str] = []
+        for token in user_tokens:
+            if token in item_text_norm:
+                phrase = _KEYWORD_PHRASES.get(token)
+                if phrase and phrase not in matched_phrases:
+                    matched_phrases.append(phrase)
+            if len(matched_phrases) >= 2:
+                break
+
+        experience_phrase = _resolve_experience_phrase(rec_row)
+        province_name = _format_province(rec_row.get("provincia", "San Martín"))
+
+        if matched_phrases:
+            interests_text = _join_spanish_list(matched_phrases)
+            if any(p in experience_phrase or experience_phrase in p for p in matched_phrases):
+                first_sentence = f"Encaja con tu interés en {interests_text} con una parada auténtica en {province_name}."
+            else:
+                first_sentence = f"Encaja con tu interés en {interests_text} gracias a su propuesta de {experience_phrase}."
         else:
-            sub = str(rec_row.get("subtipo", "")).title()
-            cat = str(rec_row.get("categoria", "")).title()
-            parts.append(f"Destacado en {sub or cat}")
+            first_sentence = f"Destaca por su propuesta de {experience_phrase} en {province_name} y se adapta bien a tu recorrido."
 
-        # 2. Respeto a restricciones operativas
-        dur = float(rec_row.get("duracion_estimada_horas", 0.0))
-        costo = float(rec_row.get("costo_referencial_pen", 0.0))
-        costo_label = "acceso libre" if costo == 0.0 else f"S/{costo:.1f}"
-        parts.append(f"tiempo de {dur:.1f}h y {costo_label}")
+        dur = float(rec_row.get("duracion_estimada_horas", 0.0) or 0.0)
+        if dur <= 1.0:
+            duration_phrase = "una visita breve"
+        elif dur <= 3.0:
+            duration_phrase = "un recorrido de unas horas"
+        elif dur <= 6.0:
+            duration_phrase = "una salida de medio día"
+        else:
+            duration_phrase = "una jornada amplia"
 
-        # 3. Dificultad y territorio
-        dif = rec_row.get("nivel_dificultad", "Media")
-        prov = rec_row.get("provincia", "San Martín")
-        parts.append(f"dificultad {dif} en {prov}")
+        dif_norm = normalizar_texto(rec_row.get("nivel_dificultad", "Media")).lower()
+        if dif_norm == "baja":
+            pace_phrase = "de ritmo tranquilo y acceso cómodo"
+        elif dif_norm == "alta":
+            pace_phrase = "con caminatas de mayor exigencia"
+        else:
+            pace_phrase = "de esfuerzo moderado"
 
-        return "; ".join(parts).capitalize() + "."
+        costo = float(rec_row.get("costo_referencial_pen", 0.0) or 0.0)
+        presupuesto_max = float(
+            perfil_dict.get("presupuesto_max_pen", perfil_dict.get("presupuesto", 100.0)) or 100.0
+        )
+
+        publico_raw = normalizar_texto(
+            perfil_dict.get("publico", perfil_dict.get("publico_recomendado", "Todos"))
+        ).lower()
+        row_publico = normalizar_texto(rec_row.get("publico_recomendado", "Todos")).lower()
+        effective_publico = publico_raw if publico_raw not in ("", "todos") else row_publico
+
+        publico_map = {
+            "familia": "ideal para compartir en familia",
+            "pareja": "ideal para disfrutar en pareja",
+            "amigos": "genial para ir con amigos",
+            "solo": "ideal para recorrer por tu cuenta",
+        }
+        publico_phrase = publico_map.get(effective_publico, "")
+
+        details: list[str] = []
+        if costo == 0.0:
+            details.append("con ingreso libre")
+        elif presupuesto_max <= 25.0:
+            details.append("con tarifa accesible")
+        if publico_phrase:
+            details.append(publico_phrase)
+
+        if details:
+            second_sentence = f"Ofrece {duration_phrase} {pace_phrase}, {', '.join(details)}."
+        else:
+            second_sentence = f"Ofrece {duration_phrase} {pace_phrase} para disfrutar sin apuros."
+
+        justification = f"{first_sentence} {second_sentence}".strip()
+        if len(justification) > 340:
+            justification = first_sentence
+        return justification[0].upper() + justification[1:]
 
     def predict_top_n(
         self,
