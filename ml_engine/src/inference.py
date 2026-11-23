@@ -15,6 +15,7 @@ Características clave:
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -72,12 +73,15 @@ _KEYWORD_PHRASES: dict[str, str] = {
     "laguna": "lagunas",
     "lagunas": "lagunas",
     "naturaleza": "naturaleza amazónica",
+    "ecologico": "naturaleza amazónica",
+    "ecologica": "naturaleza amazónica",
     "paisaje": "paisajes naturales",
     "paisajes": "paisajes naturales",
     "bosque": "bosques",
     "senderismo": "caminatas por senderos",
     "trekking": "caminatas de aventura",
     "aventura": "aventura al aire libre",
+    "agua": "aguas y pozas naturales",
     "aguas": "aguas termales",
     "termales": "aguas termales",
     "descanso": "descanso al aire libre",
@@ -90,8 +94,14 @@ _KEYWORD_PHRASES: dict[str, str] = {
     "comunidades": "cultura viva",
     "nativas": "comunidades locales",
     "cultura": "cultura local",
+    "cultural": "cultura local",
+    "culturales": "cultura local",
     "historia": "historia regional",
+    "historico": "historia regional",
+    "historica": "historia regional",
     "tradicion": "tradiciones locales",
+    "tradicional": "tradiciones locales",
+    "tradicionales": "tradiciones locales",
     "templo": "patrimonio arquitectónico",
     "templos": "patrimonio arquitectónico",
     "artesania": "artesanía tradicional",
@@ -266,11 +276,11 @@ class InferenceEngine:
         Genera una explicación dinámica de negocio (XAI) legible y cercana para el viajero.
         """
         _ = cluster_label  # Reservado para compatibilidad de firma
-        intereses_raw = str(perfil_dict.get("intereses", ""))
+        intereses_raw = str(perfil_dict.get("intereses") or "")
         user_tokens = [
-            normalizar_texto(w).lower()
-            for w in intereses_raw.replace(",", " ").split()
-            if len(w.strip()) > 2
+            tok
+            for tok in re.findall(r"[a-z0-9]+", normalizar_texto(intereses_raw).lower())
+            if len(tok) > 2
         ]
 
         item_text_norm = normalizar_texto(
@@ -281,10 +291,11 @@ class InferenceEngine:
             f"{rec_row.get('categoria', '')} "
             f"{rec_row.get('descripcion_corta', '')}"
         ).lower()
+        item_tokens = set(re.findall(r"[a-z0-9]+", item_text_norm))
 
         matched_phrases: list[str] = []
         for token in user_tokens:
-            if token in item_text_norm:
+            if token in item_tokens:
                 phrase = _KEYWORD_PHRASES.get(token)
                 if phrase and phrase not in matched_phrases:
                     matched_phrases.append(phrase)
@@ -321,22 +332,31 @@ class InferenceEngine:
         else:
             pace_phrase = "de esfuerzo moderado"
 
-        costo = float(rec_row.get("costo_referencial_pen", 0.0) or 0.0)
-        presupuesto_max = float(
-            perfil_dict.get("presupuesto_max_pen", perfil_dict.get("presupuesto", 100.0)) or 100.0
+        raw_costo = rec_row.get("costo_referencial_pen", 0.0)
+        costo = 0.0 if raw_costo is None or pd.isna(raw_costo) else float(raw_costo)
+        raw_presupuesto = perfil_dict.get("presupuesto_max_pen")
+        if raw_presupuesto is None:
+            raw_presupuesto = perfil_dict.get("presupuesto")
+        presupuesto_max = (
+            float(raw_presupuesto)
+            if raw_presupuesto is not None and str(raw_presupuesto).strip() != ""
+            else 9999.0
         )
 
-        publico_raw = normalizar_texto(
-            perfil_dict.get("publico", perfil_dict.get("publico_recomendado", "Todos"))
-        ).lower()
+        raw_pub = perfil_dict.get("publico")
+        if raw_pub is None:
+            raw_pub = perfil_dict.get("publico_recomendado")
+        publico_raw = normalizar_texto(raw_pub or "Todos").lower()
         row_publico = normalizar_texto(rec_row.get("publico_recomendado", "Todos")).lower()
         effective_publico = publico_raw if publico_raw not in ("", "todos") else row_publico
 
         publico_map = {
             "familia": "ideal para compartir en familia",
+            "familia con ninos": "ideal para ir en familia con niños",
             "pareja": "ideal para disfrutar en pareja",
             "amigos": "genial para ir con amigos",
             "solo": "ideal para recorrer por tu cuenta",
+            "adulto mayor": "pensada para disfrutar a paso pausado",
         }
         publico_phrase = publico_map.get(effective_publico, "")
 
@@ -376,13 +396,37 @@ class InferenceEngine:
         - publico / publico_recomendado (str): 'Familia', 'Amigos', 'Pareja', 'Todos'.
         """
         # 1. Sanitización de entradas del perfil
-        intereses = str(perfil_dict.get("intereses", "")).strip()
-        tiempo_max = float(perfil_dict.get("tiempo_disponible_horas", perfil_dict.get("tiempo", 8.0)))
-        presupuesto_max = float(perfil_dict.get("presupuesto_max_pen", perfil_dict.get("presupuesto", 100.0)))
-        dificultad = str(perfil_dict.get("nivel_dificultad", perfil_dict.get("dificultad", "Media"))).strip().capitalize()
-        provincia_raw = str(perfil_dict.get("provincia", "Todas")).strip()
+        intereses = str(perfil_dict.get("intereses") or "").strip()
+        raw_tiempo = perfil_dict.get("tiempo_disponible_horas")
+        if raw_tiempo is None:
+            raw_tiempo = perfil_dict.get("tiempo")
+        tiempo_max = (
+            float(raw_tiempo)
+            if raw_tiempo is not None and str(raw_tiempo).strip() != ""
+            else 4.0
+        )
+
+        raw_presupuesto = perfil_dict.get("presupuesto_max_pen")
+        if raw_presupuesto is None:
+            raw_presupuesto = perfil_dict.get("presupuesto")
+        presupuesto_max = (
+            float(raw_presupuesto)
+            if raw_presupuesto is not None and str(raw_presupuesto).strip() != ""
+            else 9999.0
+        )
+
+        raw_dificultad = perfil_dict.get("nivel_dificultad")
+        if raw_dificultad is None:
+            raw_dificultad = perfil_dict.get("dificultad")
+        dificultad = str(raw_dificultad or "Todos").strip().capitalize()
+
+        provincia_raw = str(perfil_dict.get("provincia") or "Todas").strip()
         provincia_in = normalizar_texto(provincia_raw)
-        publico = str(perfil_dict.get("publico", perfil_dict.get("publico_recomendado", "Todos"))).strip().capitalize()
+
+        raw_publico = perfil_dict.get("publico")
+        if raw_publico is None:
+            raw_publico = perfil_dict.get("publico_recomendado")
+        publico = str(raw_publico or "Todos").strip().capitalize()
 
         filtro_prov_activo = provincia_in not in ["TODAS", "TODOS", "CUALQUIERA", ""]
         provincia_ohe = provincia_in if filtro_prov_activo else "DESCONOCIDA"
