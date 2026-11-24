@@ -339,7 +339,32 @@ async def generar_y_persistir_recomendaciones(
             db_persisted = False
             ejecucion.id_ejecucion = id_ejecucion_gen
 
-    # 7. Persistir Recomendaciones individuales (Top-N)
+    # 7. Consultar imágenes (normal y 360°) en PostgreSQL y persistir Recomendaciones
+    db_images: dict[int, tuple[Optional[str], Optional[str]]] = {}
+    if db_persisted:
+        try:
+            from sqlalchemy import text
+
+            rec_ids = [
+                cache.atractivo_map.get(r["id_recurso"])
+                or cache.atractivo_name_map.get(r["nombre_recurso"].upper())
+                for r in recs
+            ]
+            valid_ids = [int(aid) for aid in rec_ids if aid]
+            if valid_ids:
+                res_imgs = await db.execute(
+                    text(
+                        "SELECT id_atractivo, imagen_principal, imagen_360 "
+                        "FROM turismo.v_catalogo "
+                        "WHERE id_atractivo = ANY(:ids)"
+                    ),
+                    {"ids": valid_ids},
+                )
+                for row_id, img_normal, img_360 in res_imgs.fetchall():
+                    db_images[int(row_id)] = (img_normal, img_360)
+        except Exception as exc:
+            logger.warning("No se pudieron consultar imágenes desde BD: %s", exc)
+
     items_response: list[RecomendacionItem] = []
     fallback_provincia_aplicado = False
 
@@ -349,6 +374,7 @@ async def generar_y_persistir_recomendaciones(
         if not id_atractivo:
             id_atractivo = cache.atractivo_name_map.get(r["nombre_recurso"].upper(), idx + 1)
 
+        img_normal_db, img_360_db = db_images.get(id_atractivo, (None, None))
         afinidad_norm = round(max(0.0, min(1.0, float(r["afinidad_pct"]) / 100.0)), 4)
         explicacion_truncada = str(r["justificacion"])[:400]
         cumple_filtros = not r.get("fallback_provincia", False)
@@ -395,7 +421,8 @@ async def generar_y_persistir_recomendaciones(
                 cluster_id=r["cluster_id"],
                 cluster_label=r["cluster_label"],
                 explicacion=explicacion_truncada,
-                imagen_url=r.get("imagen_url"),
+                imagen_url=img_normal_db or r.get("imagen_url"),
+                imagen_360=img_360_db,
                 cumple_filtros=cumple_filtros,
             )
         )

@@ -336,7 +336,7 @@ async def listar_atractivos(
                    departamento, provincia, distrito, ubigeo, latitud, longitud, estado,
                    descripcion_corta, duracion_horas, costo_min_pen, costo_max_pen, es_gratuito,
                    costo_texto, dificultad, accesibilidad, horario, temporada, etiquetas,
-                   publico_recomendado, imagen_principal
+                   publico_recomendado, imagen_principal, imagen_360, imagenes_secundarias
             FROM turismo.v_catalogo
             {where_clause}
             ORDER BY nombre ASC
@@ -424,7 +424,7 @@ async def obtener_atractivo_detalle(
                    departamento, provincia, distrito, ubigeo, latitud, longitud, estado,
                    descripcion_corta, duracion_horas, costo_min_pen, costo_max_pen, es_gratuito,
                    costo_texto, dificultad, accesibilidad, horario, temporada, etiquetas,
-                   publico_recomendado, imagen_principal
+                   publico_recomendado, imagen_principal, imagen_360, imagenes_secundarias
             FROM turismo.v_catalogo
             WHERE id_atractivo = :id
         """
@@ -568,6 +568,34 @@ async def sintetizar_voz_elevenlabs(payload: TTSRequest):
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Fallo en la síntesis de voz con ElevenLabs: {exc}",
         )
+
+
+@app.post(
+    "/api/stt",
+    summary="Transcripción de voz a texto (Speech-to-Text) multimodal con Gemini",
+    tags=["Asistente IA"],
+)
+@app.post(
+    "/assistant/stt",
+    summary="Transcripción de voz a texto (alias)",
+    tags=["Asistente IA"],
+)
+async def transcribir_voz(request: Request):
+    """Transcribe grabaciones de voz del micrófono a texto en español mediante Gemini multimodal."""
+    try:
+        from gemini_service import transcribir_audio_gemini
+
+        audio_bytes = await request.body()
+        if not audio_bytes or len(audio_bytes) < 700:
+            return {"text": ""}
+
+        mime_type = request.headers.get("content-type") or "audio/webm"
+        texto = await transcribir_audio_gemini(audio_bytes=audio_bytes, mime_type=mime_type)
+        return {"text": texto}
+    except Exception as exc:
+        logger.error("Error al transcribir voz: %s", exc)
+        return {"text": ""}
+
 
 
 
