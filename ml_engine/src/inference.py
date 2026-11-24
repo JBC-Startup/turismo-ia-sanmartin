@@ -15,6 +15,8 @@ Características clave:
 from __future__ import annotations
 
 import logging
+import math
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -49,6 +51,139 @@ def normalizar_texto(texto: Any) -> str:
     return "".join([c for c in nfkd if not unicodedata.combining(c)]).strip().upper()
 
 
+_PROVINCE_DISPLAY: dict[str, str] = {
+    "BELLAVISTA": "Bellavista",
+    "EL DORADO": "El Dorado",
+    "HUALLAGA": "Huallaga",
+    "LAMAS": "Lamas",
+    "MARISCAL CACERES": "Mariscal Cáceres",
+    "MOYOBAMBA": "Moyobamba",
+    "PICOTA": "Picota",
+    "RIOJA": "Rioja",
+    "SAN MARTIN": "San Martín",
+    "TOCACHE": "Tocache",
+}
+
+_LOWERCASE_CONNECTORS = {"de", "del", "la", "las", "el", "los", "y"}
+
+_KEYWORD_PHRASES: dict[str, str] = {
+    "catarata": "cataratas",
+    "cataratas": "cataratas",
+    "cascada": "cascadas",
+    "cascadas": "cascadas",
+    "laguna": "lagunas",
+    "lagunas": "lagunas",
+    "naturaleza": "naturaleza amazónica",
+    "ecologico": "naturaleza amazónica",
+    "ecologica": "naturaleza amazónica",
+    "paisaje": "paisajes naturales",
+    "paisajes": "paisajes naturales",
+    "bosque": "bosques",
+    "senderismo": "caminatas por senderos",
+    "trekking": "caminatas de aventura",
+    "aventura": "aventura al aire libre",
+    "agua": "paisajes de agua",
+    "aguas": "paisajes de agua",
+    "termales": "aguas termales",
+    "descanso": "descanso al aire libre",
+    "poza": "pozas naturales",
+    "pozas": "pozas naturales",
+    "banos": "baños naturales",
+    "rio": "ríos y riberas",
+    "rios": "ríos y riberas",
+    "comunidad": "cultura viva",
+    "comunidades": "cultura viva",
+    "nativas": "comunidades locales",
+    "cultura": "cultura local",
+    "cultural": "cultura local",
+    "culturales": "cultura local",
+    "historia": "historia regional",
+    "historico": "historia regional",
+    "historica": "historia regional",
+    "tradicion": "tradiciones locales",
+    "tradicional": "tradiciones locales",
+    "tradicionales": "tradiciones locales",
+    "templo": "patrimonio arquitectónico",
+    "templos": "patrimonio arquitectónico",
+    "artesania": "artesanía tradicional",
+    "artesanias": "artesanía tradicional",
+    "castillo": "arquitectura singular",
+    "lamista": "herencia lamista",
+    "gastronomia": "gastronomía regional",
+    "cacao": "cacao amazónico",
+    "chocolate": "chocolate artesanal",
+    "cafe": "café de la región",
+    "juane": "cocina tradicional",
+    "cecina": "cocina tradicional",
+    "mercados": "mercados locales",
+    "sabores": "sabores amazónicos",
+    "degustacion": "degustaciones locales",
+    "mirador": "miradores panorámicos",
+    "miradores": "miradores panorámicos",
+}
+
+# Traducir solo los rótulos administrativos; el resto conserva el tipo del catálogo.
+_EXPERIENCE_LABELS: dict[str, str] = {
+    "FIESTAS TRADICIONALES(HERRANZA CARNAVALES OTROS)": "fiestas y costumbres locales",
+    "FIESTAS RELIGIOSAS- PATRONALES": "celebraciones patronales",
+    "FIESTAS RELIGIOSAS-PATRONALES": "celebraciones patronales",
+    "TEJIDOS(LANAS FIBRAS DE ANIMALES FIBRA VEGETAL. ETC)": "tejidos artesanales",
+    "PETROGLIFOS (GRABADOS EN PIEDRA)": "petroglifos",
+    "GALERIAS EXPOSITIVA": "galerías de arte y cultura",
+    "LUGARES PINTORESCOS DE FLORA Y FAUNA": "flora y fauna local",
+    "REALIZACIONES TECNICAS CIENTIFICAS Y ARTISTICAS CONTEMPORANEAS": "espacios productivos y culturales",
+    "AGRICULTURA": "actividades del campo",
+    "TEMPLO": "templos", "CAPILLA": "capillas", "PLAZA": "plazas", "CASTILLO": "castillos",
+    "TRADICIONALES": "tradiciones locales",
+}
+
+_ACCENTED_WORDS: dict[str, str] = {
+    "alfareria": "alfarería", "areas": "áreas", "botanicos": "botánicos",
+    "canones": "cañones", "ceramica": "cerámica", "conservacion": "conservación",
+    "exhibicion": "exhibición", "galerias": "galerías", "musica": "música",
+    "proteccion": "protección", "rapidos": "rápidos", "rios": "ríos", "tipicos": "típicos",
+}
+
+
+def _format_province(raw_province: Any) -> str:
+    norm = normalizar_texto(raw_province)
+    if not norm:
+        return "San Martín"
+    if norm in _PROVINCE_DISPLAY:
+        return _PROVINCE_DISPLAY[norm]
+    words = norm.lower().split()
+    return " ".join(
+        w if idx > 0 and w in _LOWERCASE_CONNECTORS else w.capitalize()
+        for idx, w in enumerate(words)
+    )
+
+
+def _join_spanish_list(items: list[str]) -> str:
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} y {items[1]}"
+    return f"{', '.join(items[:-1])} y {items[-1]}"
+
+
+def _resolve_experience_phrase(rec_row: pd.Series) -> str:
+    for field in ("subtipo", "categoria"):
+        raw = rec_row.get(field)
+        norm = normalizar_texto(raw)
+        if not norm or norm == "OTROS":
+            continue
+        if norm in _EXPERIENCE_LABELS:
+            return _EXPERIENCE_LABELS[norm]
+        return re.sub(
+            r"[^\s-]+",
+            lambda match: _ACCENTED_WORDS.get(normalizar_texto(match[0]).lower(), match[0]),
+            str(raw).strip().lower(),
+        )
+    return "lugares de la región"
+
+
 class InferenceEngine:
     """
     Motor autónomo de inferencia para el sistema de recomendación turística.
@@ -77,6 +212,8 @@ class InferenceEngine:
         self.X_global = bundle["X_global"]
         self.catalogo: pd.DataFrame = bundle["catalogo"].copy().reset_index(drop=True)
         self.cluster_metadata: dict[int, dict[str, str]] = bundle.get("cluster_metadata", {})
+        self._lats = pd.to_numeric(self.catalogo.get("latitud"), errors="coerce").fillna(0.0).to_numpy(dtype=float)
+        self._lngs = pd.to_numeric(self.catalogo.get("longitud"), errors="coerce").fillna(0.0).to_numpy(dtype=float)
 
         logger.info(
             "Artefacto v%s cargado con éxito. Catálogo: %d atractivos, Espacio vectorial: %d dimensiones.",
@@ -92,43 +229,147 @@ class InferenceEngine:
         cluster_label: str,
     ) -> str:
         """
-        Genera una explicación dinámica de negocio (XAI) legible y fundamentada.
+        Genera una explicación dinámica de negocio (XAI) legible y cercana para el viajero.
         """
-        parts = []
+        _ = cluster_label  # Reservado para compatibilidad de firma
+        intereses_raw = str(perfil_dict.get("intereses") or "")
+        user_tokens = [
+            tok
+            for tok in re.findall(r"[a-z0-9]+", normalizar_texto(intereses_raw).lower())
+            if len(tok) > 2
+        ]
 
-        # 1. Coincidencia semántica con intereses del turista
-        intereses = str(perfil_dict.get("intereses", "")).lower()
-        user_words = [w for w in intereses.replace(",", " ").split() if len(w) > 3]
-
-        item_text = (
+        item_text_norm = normalizar_texto(
             f"{rec_row.get('nombre_recurso', '')} "
             f"{rec_row.get('etiquetas_interes', '')} "
             f"{rec_row.get('subtipo', '')} "
+            f"{rec_row.get('tipo', '')} "
             f"{rec_row.get('categoria', '')} "
             f"{rec_row.get('descripcion_corta', '')}"
         ).lower()
+        item_tokens = set(re.findall(r"[a-z0-9]+", item_text_norm))
 
-        matched = [w for w in user_words if w in item_text]
-        if matched:
-            unique_matches = list(dict.fromkeys(matched))[:3]
-            parts.append(f"Alineado a tus intereses en {', '.join(unique_matches)}")
-        else:
-            sub = str(rec_row.get("subtipo", "")).title()
-            cat = str(rec_row.get("categoria", "")).title()
-            parts.append(f"Destacado en {sub or cat}")
+        matched_phrases: list[str] = []
+        for token in user_tokens:
+            if token in item_tokens:
+                phrase = _KEYWORD_PHRASES.get(token)
+                if phrase and phrase not in matched_phrases:
+                    matched_phrases.append(phrase)
+            if len(matched_phrases) >= 2:
+                break
 
-        # 2. Respeto a restricciones operativas
-        dur = float(rec_row.get("duracion_estimada_horas", 0.0))
-        costo = float(rec_row.get("costo_referencial_pen", 0.0))
-        costo_label = "acceso libre" if costo == 0.0 else f"S/{costo:.1f}"
-        parts.append(f"tiempo de {dur:.1f}h y {costo_label}")
+        experience_phrase = _resolve_experience_phrase(rec_row)
+        province_name = _format_province(rec_row.get("provincia", "San Martín"))
 
-        # 3. Dificultad y territorio
-        dif = rec_row.get("nivel_dificultad", "Media")
-        prov = rec_row.get("provincia", "San Martín")
-        parts.append(f"dificultad {dif} en {prov}")
+        # Mencionar un interés solo si aparece en los datos de este lugar.
+        theme = experience_phrase
+        if matched_phrases and experience_phrase == "lugares de la región":
+            theme = _join_spanish_list(matched_phrases)
 
-        return "; ".join(parts).capitalize() + "."
+        raw_budget = perfil_dict.get("presupuesto_max_pen")
+        if raw_budget is None:
+            raw_budget = perfil_dict.get("presupuesto")
+        cost = rec_row.get("costo_referencial_pen")
+        fits_budget = (
+            raw_budget is not None and str(raw_budget).strip() != ""
+            and cost is not None and not pd.isna(cost)
+            and float(cost) <= float(raw_budget)
+        )
+        raw_time = perfil_dict.get("tiempo_disponible_horas")
+        if raw_time is None:
+            raw_time = perfil_dict.get("tiempo")
+        duration = rec_row.get("duracion_estimada_horas")
+        fits_time = (
+            raw_time is not None and str(raw_time).strip() != ""
+            and duration is not None and not pd.isna(duration)
+            and 0 < float(duration) <= float(raw_time)
+        )
+
+        # Variación estable por lugar, sin aleatoriedad ni cambios en el ranking.
+        variation = sum(ord(char) for char in str(rec_row.get("nombre_recurso", ""))) % 3
+        fit = ""
+        if fits_budget and (variation != 1 or not fits_time):
+            fit = " sin salir de tu presupuesto de entrada"
+        elif fits_time:
+            fit = " dentro del tiempo que tienes para la visita"
+
+        description_raw = rec_row.get("descripcion_corta")
+        description = "" if pd.isna(description_raw) else str(description_raw or "").strip()
+        if description and not re.search(r"provisional|requiere validaci[oó]n|figura en la base", description, re.I):
+            name = normalizar_texto(rec_row.get("nombre_recurso", ""))
+            detail = next((
+                sentence for sentence in re.split(r"\.\s+", description)
+                if normalizar_texto(sentence).rstrip(".") != name
+            ), "")
+            if detail and len(detail) <= 240:
+                suffix = (
+                    "; la visita se ajusta a tu presupuesto de entrada" if "presupuesto" in fit
+                    else "; su duración se ajusta al tiempo que tienes" if fit else ""
+                )
+                return f"{detail.rstrip('.!?')}{suffix}."
+
+        openings = (
+            f"Puedes conocer {theme} en {province_name}",
+            f"En {province_name}, una opción para conocer {theme}",
+            f"Una opción en {province_name} para conocer {theme}",
+        )
+        return f"{openings[variation]}{fit}."
+
+    def _haversine_km(self, idx_a: int, idx_b: int) -> float:
+        lat1, lon1 = self._lats[idx_a], self._lngs[idx_a]
+        lat2, lon2 = self._lats[idx_b], self._lngs[idx_b]
+        if (lat1 == 0.0 and lon1 == 0.0) or (lat2 == 0.0 and lon2 == 0.0):
+            return 9999.0
+        dlat = math.radians(lat2 - lat1)
+        dlon = math.radians(lon2 - lon1)
+        a = (
+            math.sin(dlat / 2.0) ** 2
+            + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * (math.sin(dlon / 2.0) ** 2)
+        )
+        return 2.0 * 6371.0 * math.asin(min(1.0, math.sqrt(a)))
+
+    def _select_coherent_top_n(
+        self,
+        ordered_indices: np.ndarray,
+        top_n: int,
+        tiempo_max: float,
+    ) -> np.ndarray:
+        """Mantiene cercanía geográfica entre paradas cuando el tiempo disponible es corto."""
+        if len(ordered_indices) <= 1 or tiempo_max > 9.0:
+            return ordered_indices[:top_n]
+
+        strict_km = 38.0 if tiempo_max <= 4.5 else 78.0
+        relaxed_km = 65.0 if tiempo_max <= 4.5 else 120.0
+
+        anchor_idx = int(ordered_indices[0])
+        selected: list[int] = [anchor_idx]
+        selected_set = {anchor_idx}
+
+        # Priorizar candidatos top dentro del radio estricto, luego radio ampliado y finalmente resto
+        for max_km in (strict_km, relaxed_km, float("inf")):
+            if len(selected) >= top_n:
+                break
+            for candidate in ordered_indices[1:]:
+                c_idx = int(candidate)
+                if c_idx in selected_set:
+                    continue
+                if max_km == float("inf") or self._haversine_km(anchor_idx, c_idx) <= max_km:
+                    selected.append(c_idx)
+                    selected_set.add(c_idx)
+                    if len(selected) >= top_n:
+                        break
+
+        # Ordenar paradas restantes por vecino más cercano para evitar zig-zags en la ruta
+        if len(selected) > 2:
+            routed = [selected[0]]
+            remaining = selected[1:]
+            while remaining:
+                last = routed[-1]
+                nearest_pos = min(range(len(remaining)), key=lambda i: self._haversine_km(last, remaining[i]))
+                routed.append(remaining.pop(nearest_pos))
+            selected = routed
+
+        return np.array(selected, dtype=ordered_indices.dtype)
 
     def predict_top_n(
         self,
@@ -148,13 +389,37 @@ class InferenceEngine:
         - publico / publico_recomendado (str): 'Familia', 'Amigos', 'Pareja', 'Todos'.
         """
         # 1. Sanitización de entradas del perfil
-        intereses = str(perfil_dict.get("intereses", "")).strip()
-        tiempo_max = float(perfil_dict.get("tiempo_disponible_horas", perfil_dict.get("tiempo", 8.0)))
-        presupuesto_max = float(perfil_dict.get("presupuesto_max_pen", perfil_dict.get("presupuesto", 100.0)))
-        dificultad = str(perfil_dict.get("nivel_dificultad", perfil_dict.get("dificultad", "Media"))).strip().capitalize()
-        provincia_raw = str(perfil_dict.get("provincia", "Todas")).strip()
+        intereses = str(perfil_dict.get("intereses") or "").strip()
+        raw_tiempo = perfil_dict.get("tiempo_disponible_horas")
+        if raw_tiempo is None:
+            raw_tiempo = perfil_dict.get("tiempo")
+        tiempo_max = (
+            float(raw_tiempo)
+            if raw_tiempo is not None and str(raw_tiempo).strip() != ""
+            else 4.0
+        )
+
+        raw_presupuesto = perfil_dict.get("presupuesto_max_pen")
+        if raw_presupuesto is None:
+            raw_presupuesto = perfil_dict.get("presupuesto")
+        presupuesto_max = (
+            float(raw_presupuesto)
+            if raw_presupuesto is not None and str(raw_presupuesto).strip() != ""
+            else 9999.0
+        )
+
+        raw_dificultad = perfil_dict.get("nivel_dificultad")
+        if raw_dificultad is None:
+            raw_dificultad = perfil_dict.get("dificultad")
+        dificultad = str(raw_dificultad or "Todos").strip().capitalize()
+
+        provincia_raw = str(perfil_dict.get("provincia") or "Todas").strip()
         provincia_in = normalizar_texto(provincia_raw)
-        publico = str(perfil_dict.get("publico", perfil_dict.get("publico_recomendado", "Todos"))).strip().capitalize()
+
+        raw_publico = perfil_dict.get("publico")
+        if raw_publico is None:
+            raw_publico = perfil_dict.get("publico_recomendado")
+        publico = str(raw_publico or "Todos").strip().capitalize()
 
         filtro_prov_activo = provincia_in not in ["TODAS", "TODOS", "CUALQUIERA", ""]
         provincia_ohe = provincia_in if filtro_prov_activo else "DESCONOCIDA"
@@ -217,10 +482,15 @@ class InferenceEngine:
             logger.warning("No se encontraron candidatos que cumplan los filtros.")
             return []
 
-        # 5. Ordenamiento y extracción del Top-N
+        # 5. Ordenamiento y extracción del Top-N con coherencia geográfica para salidas cortas
         scores_validos = sims[indices_validos]
-        top_sub_idx = np.argsort(scores_validos)[::-1][:top_n]
-        best_indices = indices_validos[top_sub_idx]
+        sorted_order = np.argsort(scores_validos)[::-1]
+        ordered_indices = indices_validos[sorted_order]
+        best_indices = self._select_coherent_top_n(
+            ordered_indices=ordered_indices,
+            top_n=top_n,
+            tiempo_max=tiempo_max,
+        )
 
         # 6. Construcción del resultado serializable
         results = []
