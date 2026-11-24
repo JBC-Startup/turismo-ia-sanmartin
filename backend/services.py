@@ -341,7 +341,7 @@ async def generar_y_persistir_recomendaciones(
 
     # 7. Consultar imágenes (normal y 360°) en PostgreSQL y persistir Recomendaciones
     db_images: dict[int, tuple[Optional[str], Optional[str]]] = {}
-    if db_persisted:
+    if db is not None:
         try:
             from sqlalchemy import text
 
@@ -354,14 +354,20 @@ async def generar_y_persistir_recomendaciones(
             if valid_ids:
                 res_imgs = await db.execute(
                     text(
-                        "SELECT id_atractivo, imagen_principal, imagen_360 "
+                        "SELECT id_atractivo, imagen_principal, imagen_360, imagenes_secundarias "
                         "FROM turismo.v_catalogo "
                         "WHERE id_atractivo = ANY(:ids)"
                     ),
                     {"ids": valid_ids},
                 )
-                for row_id, img_normal, img_360 in res_imgs.fetchall():
-                    db_images[int(row_id)] = (img_normal, img_360)
+                for row_id, img_normal, img_360, imgs_sec in res_imgs.fetchall():
+                    candidates = [img_normal, *(imgs_sec or [])]
+                    cleaned = [str(u).strip() for u in candidates if str(u or "").strip()]
+                    resolved_normal = next(
+                        (u for u in cleaned if "turismosanmartin.pe" not in u),
+                        cleaned[0] if cleaned else None,
+                    )
+                    db_images[int(row_id)] = (resolved_normal, (img_360 or "").strip() or None)
         except Exception as exc:
             logger.warning("No se pudieron consultar imágenes desde BD: %s", exc)
 
