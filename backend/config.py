@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     ELEVENLABS_MODEL_ID: str = "eleven_multilingual_v2"
 
     # API Metadata
-    PROJECT_NAME: str = "TurismoIA San Martín API"
+    PROJECT_NAME: str = "Selvazo San Martín API"
     VERSION: str = "1.0.0"
     API_V1_PREFIX: str = "/api"
     DEBUG: bool = False

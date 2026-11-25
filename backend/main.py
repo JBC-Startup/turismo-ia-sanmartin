@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
       y sincroniza los catálogos de PostgreSQL en la memoria caché.
     - Al apagar: Cierra el pool de conexiones de PostgreSQL.
     """
-    logger.info("=== Iniciando microservicio FastAPI TurismoIA San Martín ===")
+    logger.info("=== Iniciando microservicio FastAPI Selvazo San Martín ===")
     
     # 1. Carga autónoma del modelo serializado en RAM (< 10 ms por inferencia)
     try:
