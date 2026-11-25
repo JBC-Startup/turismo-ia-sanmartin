@@ -103,6 +103,8 @@ class TestDataIngestion(unittest.TestCase):
         self.assertEqual(df_clean.loc[1, "accesibilidad_reducida"], "Parcial")
         self.assertEqual(df_clean.loc[2, "accesibilidad_reducida"], "No")
         self.assertEqual(df_clean.loc[3, "accesibilidad_reducida"], "No")  # Default
+        self.assertEqual(df_clean["provincia_informado"].tolist(), [True, True, False, True])
+        self.assertEqual(df_clean["nivel_dificultad_informado"].tolist(), [True, True, True, False])
 
     def test_clean_numerical_fields(self):
         sample_data = pd.DataFrame({
@@ -116,14 +118,18 @@ class TestDataIngestion(unittest.TestCase):
         self.assertEqual(df_clean.loc[3, "duracion_estimada_horas"], 2.0)
         self.assertEqual(df_clean.loc[4, "duracion_estimada_horas"], 2.0)
         self.assertEqual(df_clean["duracion_estimada_horas"].dtype, float)
+        self.assertEqual(df_clean["duracion_estimada_horas_informado"].tolist(), [True, True, True, False, False])
 
         # Costo referencial: nulos y no numéricos son 0.0
         self.assertEqual(df_clean.loc[1, "costo_referencial_pen"], 0.0)
         self.assertEqual(df_clean.loc[3, "costo_referencial_pen"], 0.0)
         self.assertEqual(df_clean["costo_referencial_pen"].dtype, float)
+        self.assertEqual(df_clean["costo_referencial_pen_informado"].tolist(), [True, False, True, True, False])
+        self.assertEqual(df_clean["costo_acceso_libre_informado"].tolist(), [False, False, False, True, False])
 
         # Distancia: mediana de [50, 100, 150, 200] es 125.0
         self.assertEqual(df_clean.loc[2, "distancia_km_tarapoto"], 125.0)
+        self.assertEqual(df_clean["distancia_km_tarapoto_informado"].tolist(), [True, True, False, True, True])
 
     def test_end_to_end_pipeline_with_real_data(self):
         raw_path = "data/raw/turismo_san_martin.xlsx"

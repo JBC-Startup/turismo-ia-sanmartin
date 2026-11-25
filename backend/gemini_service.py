@@ -15,6 +15,8 @@ Seguridad y Buenas Prácticas:
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+import math
 import re
 from typing import Any, Optional
 
@@ -26,6 +28,70 @@ from config import settings
 logger = logging.getLogger("turismoia.gemini")
 
 GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+
+
+def _valor_informado(row: pd.Series, field: str) -> bool:
+    """True only when an explicit source-presence flag survived catalog export."""
+    value = row.get(f"{field}_informado", False)
+    if pd.isna(value):
+        return False
+    return value is True or str(value).strip().lower() in {"true", "1", "si", "sí"}
+
+
+def _registro_con_fuente(row: pd.Series) -> bool:
+    """Require a published record, source URL and dated verification metadata."""
+    source_value = row.get("url_fuente", "")
+    date_value = row.get("fecha_verificacion", "")
+    state_value = row.get("estado", "")
+    source = "" if pd.isna(source_value) else str(source_value).strip()
+    verified_at = "" if pd.isna(date_value) else str(date_value).strip()
+    state = "" if pd.isna(state_value) else str(state_value).strip().upper()
+    try:
+        published_code = int(row.get("codigo_estado", 0)) == 1
+    except (TypeError, ValueError):
+        published_code = False
+    published_state = state == "PUBLICADO"
+    valid_date = verified_at.lower() not in {"", "nan", "none", "null", "nat", "n/a", "<na>"}
+    return bool(source.startswith(("https://", "http://")) and valid_date and (published_code or published_state))
+
+
+def _valor_numerico_verificable(row: pd.Series, field: str) -> Optional[float]:
+    if not _registro_con_fuente(row) or not _valor_informado(row, field):
+        return None
+    try:
+        value = float(row.get(field))
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) and value >= 0 else None
+
+
+def _texto_verificable(row: pd.Series, field: str) -> Optional[str]:
+    if not _registro_con_fuente(row) or not _valor_informado(row, field):
+        return None
+    value = str(row.get(field, "")).strip()
+    normalized = value.lower()
+    if not value or normalized in {"nan", "none", "null", "n/a", "na", "<na>"}:
+        return None
+    if any(marker in normalized for marker in ("sin horario fijo publicado", "no aplica", "consultar calendario", "según programa", "segun programa")):
+        return None
+    return value
+
+
+def _descripcion_sin_datos_operativos(row: pd.Series) -> str:
+    """Keep descriptive sentences while withholding uncited numeric/practical claims."""
+    if not _registro_con_fuente(row):
+        return ""
+    raw = row.get("descripcion_corta", "")
+    if pd.isna(raw):
+        return ""
+    sentences = re.split(r"(?<=[.!?])\s+", str(raw).strip())
+    operational = re.compile(
+        r"\d|S/|\bsoles?\b|\bkm\b|kil[oó]metr|\bminut|\bhora|\bhorario|\bruta\b|\bdistancia|"
+        r"\bprecio|\bcosto|\btarifa|\btransporte|\bdesde tarapoto|\btiempo de viaje",
+        re.IGNORECASE,
+    )
+    safe = [sentence for sentence in sentences if sentence and not operational.search(sentence)]
+    return " ".join(safe)[:200]
 
 
 def buscar_atractivos_relevantes(
@@ -54,7 +120,7 @@ def buscar_atractivos_relevantes(
     elif isinstance(context, str):
         context_name = context
 
-    matches = pd.DataFrame()
+    context_matches = pd.DataFrame()
 
     # 1. Coincidencia por contexto activo (ej. "Laguna de Sauce")
     if context_name:
@@ -67,7 +133,23 @@ def buscar_atractivos_relevantes(
             | catalogo["distrito"].str.contains(pattern_context, case=False, na=False)
         ]
         if not c_matches.empty:
-            matches = c_matches
+            context_matches = c_matches
+
+    query_name_stopwords = {
+        "quiero", "quisiera", "recomiendame", "recomiend", "visitar", "conocer", "destino", "destinos",
+        "atractivo", "atractivos", "lugar", "lugares", "sitio", "sitios", "catarata", "cataratas",
+        "cascada", "cascadas", "laguna", "lagunas", "costo", "precio", "cuesta", "horario", "ruta",
+        "distancia", "duracion", "cuanto", "demora", "tiempo", "viaje", "como", "llegar", "entrada",
+        "tarifa", "dame", "opciones", "mejores", "cerca", "visita",
+    }
+    name_tokens = [
+        word for word in re.findall(r"\w+", msg_lower)
+        if len(word) > 3 and word not in query_name_stopwords
+    ]
+    name_matches = pd.DataFrame()
+    if name_tokens:
+        name_pattern = "|".join(re.escape(word) for word in name_tokens[:5])
+        name_matches = catalogo[catalogo["nombre_recurso"].str.contains(name_pattern, case=False, na=False)]
 
     # 2. Coincidencia por términos clave de la consulta
     terms: list[str] = []
@@ -88,6 +170,7 @@ def buscar_atractivos_relevantes(
         if any(k in msg_lower for k in keywords):
             terms.extend(patterns)
 
+    query_matches = pd.DataFrame()
     if terms:
         pattern = "|".join(terms)
         query_matches = catalogo[
@@ -98,8 +181,9 @@ def buscar_atractivos_relevantes(
             | catalogo["provincia"].str.contains(pattern, case=False, na=False)
             | catalogo["distrito"].str.contains(pattern, case=False, na=False)
         ]
-        if not query_matches.empty:
-            matches = query_matches
+    matches = name_matches if not name_matches.empty else context_matches
+    if matches.empty and not query_matches.empty:
+        matches = query_matches
 
     # 3. Si aún no hay coincidencias directas, buscar palabras significativas del mensaje (> 3 letras)
     if matches.empty:
@@ -114,29 +198,35 @@ def buscar_atractivos_relevantes(
             except Exception:
                 matches = pd.DataFrame()
 
-    # 4. Fallback de selección estelar: Si no hubo coincidencia (ej. "Hola"),
-    # mostrar las joyas turísticas más icónicas de San Martín en vez de los primeros registros al azar
     if matches.empty:
-        iconos = ["AHUASHIYACU", "SAUCE", "CASTILLO DE LAMAS", "TIO YACU", "SAN MATEO"]
-        pattern_iconos = "|".join(iconos)
-        sample_df = catalogo[catalogo["nombre_recurso"].str.contains(pattern_iconos, case=False, na=False)].head(limit)
-        if sample_df.empty:
-            sample_df = catalogo.head(limit)
-    else:
-        sample_df = matches.head(limit)
+        return []
+
+    sample_df = matches.head(limit)
 
     related: list[dict[str, Any]] = []
     for _, row in sample_df.iterrows():
+        verified_record = _registro_con_fuente(row)
         related.append({
             "id_recurso": str(row.get("id_recurso", "")),
             "nombre": str(row.get("nombre_recurso", "")),
-            "provincia": str(row.get("provincia", "")),
-            "distrito": str(row.get("distrito", "")),
-            "duracion_horas": float(row.get("duracion_estimada_horas", 2.0)),
-            "costo_pen": float(row.get("costo_referencial_pen", 0.0)),
-            "dificultad": str(row.get("nivel_dificultad", "Media")),
+            "provincia": _texto_verificable(row, "provincia") or "",
+            "distrito": _texto_verificable(row, "distrito") or "",
+            "duracion_horas": _valor_numerico_verificable(row, "duracion_estimada_horas"),
+            "costo_pen": _valor_numerico_verificable(row, "costo_referencial_pen"),
+            "costo_es_acceso_libre": (
+                _registro_con_fuente(row)
+                and _valor_informado(row, "costo_acceso_libre")
+            ),
+            "distancia_km_tarapoto": _valor_numerico_verificable(row, "distancia_km_tarapoto"),
+            "tiempo_viaje_horas_tarapoto": _valor_numerico_verificable(row, "tiempo_viaje_horas_tarapoto"),
+            "tiempo_total_tour_horas": _valor_numerico_verificable(row, "tiempo_total_tour_horas"),
+            "horario_referencial": _texto_verificable(row, "horario_referencial"),
+            "ruta_acceso_desde_tarapoto": _texto_verificable(row, "ruta_acceso_desde_tarapoto"),
+            "url_fuente": str(row.get("url_fuente", "")) if verified_record else None,
+            "fecha_verificacion": str(row.get("fecha_verificacion", "")) if verified_record else None,
+            "dificultad": _texto_verificable(row, "nivel_dificultad"),
             "imagen_url": str(row.get("imagen_url", "")),
-            "descripcion": str(row.get("descripcion_corta", ""))[:200] + "...",
+            "descripcion": _descripcion_sin_datos_operativos(row),
         })
 
     return related
@@ -192,56 +282,90 @@ def es_consulta_de_atractivos(message: str) -> bool:
         "mi nombre", "me llamo", "soy ", "gracias", "chau", "adios", "adiós"
     ]
     if any(msg_lower.startswith(w) for w in saludos_o_presentacion):
-        palabras_interes = ["recomiend", "atractiv", "lugar", "destino", "catarata", "laguna", "visitar", "conocer", "paseo", "tour", "hacer", "costo", "precio"]
+        palabras_interes = ["recomiend", "atractiv", "lugar", "destino", "catarata", "laguna", "visitar", "conocer", "paseo", "tour", "hacer", "costo", "precio", "horario", "ruta", "distancia", "dura", "tiempo"]
         if not any(k in msg_lower for k in palabras_interes):
             return False
     return True
 
 
+def campos_practicos_solicitados(message: str) -> list[str]:
+    """Map a travel-data question to catalog fields that can prove its answer."""
+    text = message.lower()
+    requested: list[str] = []
+    if any(term in text for term in ("precio", "costo", "cuánto cuesta", "cuanto cuesta", "cuánto sale", "cuanto sale", "cuánto vale", "cuanto vale", "tarifa", "entrada", "presupuesto")):
+        requested.append("costo_pen")
+    if any(term in text for term in ("horario", "a qué hora", "a que hora", "abre", "cierr", "hora de atención", "hora de atencion")):
+        requested.append("horario_referencial")
+    if any(term in text for term in ("ruta", "cómo llegar", "como llegar", "cómo llego", "como llego", "por dónde", "por donde", "camino", "carretera", "transporte")):
+        requested.append("ruta_acceso_desde_tarapoto")
+    if any(term in text for term in ("distancia", "cuántos km", "cuantos km", "kilómetro", "kilometro")):
+        requested.append("distancia_km_tarapoto")
+    if "tiempo de viaje" in text:
+        requested.append("tiempo_viaje_horas_tarapoto")
+    elif any(term in text for term in ("duración", "duracion", "cuánto demora", "cuanto demora", "cuánto tiempo", "cuanto tiempo", "cuántas horas", "cuantas horas")):
+        requested.append("duracion_horas")
+    return requested
+
+
 def _construir_system_prompt(atractivos: list[dict[str, Any]], context: Optional[dict[str, Any] | str]) -> str:
-    """Construye las instrucciones de personalidad y razonamiento para el LLM."""
+    """Build Loro FISI's persona with catalog fields gated by explicit provenance."""
     prompt = (
-        "Eres el Asistente Guía Turístico Inteligente oficial de la Región San Martín, Perú.\n"
-        "Tu misión es razonar dinámicamente cada interacción, ofreciendo recomendaciones auténticas, útiles y personalizadas.\n\n"
-        "DIRECTRICES OBLIGATORIAS:\n"
-        "1. RESPUESTA DIRECTA Y PRECISA: Analiza y responde exactamente a lo que el turista pregunta. "
-        "Si te dice su nombre o saluda, responde amablemente llamándolo por su nombre de forma concisa. "
-        "Si pregunta un costo, ruta, horario o recomendación, da primero ese dato concreto sin rodeos.\n"
-        "2. CONCISO Y ÁGIL: 1 a 2 párrafos bien estructurados con Markdown. Evita párrafos largos o listas infinitas a menos que se te soliciten.\n"
-        "3. LENGUAJE NATURAL Y CÁLIDO: Conversa como un guía local experto y amigable de la selva peruana (no como un bot rígido).\n"
-        "4. MEMORIA E ITERACIÓN: Mantén el contexto de los mensajes anteriores en la conversación.\n"
-        "5. SECCIÓN DE PREGUNTAS SUGERIDAS (OBLIGATORIO AL FINAL):\n"
-        "Al final de tu respuesta, añade SIEMPRE una sección con exactamente 3 preguntas sugeridas breves y dinámicas con este formato exacto:\n"
+        "Eres Loro FISI, la mascota virtual de TurismoIA San Martín: un loro tropical simpático, expresivo, curioso y conversador.\n"
+        "PERSONALIDAD: juvenil, divertido y amigable. Habla como un amigo de la selva peruana, especialmente de San Martín, con español peruano cálido y expresiones regionales ocasionales y discretas. Puedes bromear suavemente, sin exagerar el acento ni la jerga.\n"
+        "No te presentes como guía oficial, institución, persona real ni operador turístico; no afirmes experiencias personales. No repitas tu nombre en cada respuesta. Responde brevemente a los saludos y evita el tono formal o institucional. Redacta de forma natural para reproducción por voz.\n\n"
+        "EVIDENCIA Y SEGURIDAD DE DATOS (prioridad máxima):\n"
+        "- Recomienda únicamente atractivos que aparezcan en los registros entregados abajo. No selecciones otros por conocimiento general.\n"
+        "- Los campos prácticos se incluyen únicamente si la fuente los registró antes de cualquier imputación, y el registro tiene estado PUBLICADO, URL de fuente y fecha de verificación. Un 0 numérico ambiguo no es dato confirmado ni prueba de acceso libre; solo se indica acceso libre si la fuente lo expresa explícitamente.\n"
+        "- Los valores del catálogo son datos registrados en la fecha indicada; no afirmes que estén vigentes hoy ni que consultaste la fuente en vivo. Para precios y condiciones que pueden cambiar, aclara la fecha y recomienda confirmarlos con la fuente antes del viaje.\n"
+        "- No calcules ni infieras precios, horarios, rutas, distancias, duración, transporte, disponibilidad ni cantidades a partir de otro campo, del contexto visual o de conocimiento general. No completes huecos con estimaciones.\n"
+        "- Si el registro no incluye un dato solicitado, dilo claramente y con calidez: no tienes un dato confirmado en el catálogo. No inventes una respuesta para ser útil.\n"
+        "- El contexto visual solo indica qué pantalla mira la persona; no es evidencia turística.\n"
+        "ESTILO: contesta saludos de forma breve. En preguntas de viaje, responde primero a lo pedido en uno o dos párrafos concisos y naturales para voz. Mantén contexto de la conversación sin tratar afirmaciones previas tuyas como evidencia.\n"
+        "Cierra con exactamente 3 preguntas sugeridas breves usando este formato:\n"
         "---SUGERENCIAS---\n"
         "- ¿Pregunta sugerida 1?\n"
         "- ¿Pregunta sugerida 2?\n"
-        "- ¿Pregunta sugerida 3?\n\n"
-        "Base de Conocimiento de la Región San Martín:\n"
-        "- Provincias clave: San Martín (Tarapoto), Lamas, Moyobamba (Ciudad de las Orquídeas), Rioja, Mariscal Cáceres, Tocache, etc.\n"
-        "- Atractivos ícono: Catarata de Ahuashiyacu, Laguna Azul (Sauce), Castillo de Lamas, Baños Termales de San Mateo, Naciente de Tío Yacu, Cueva de Palestina.\n"
-        "- Gastronomía: Juane de gallina, Tacacho con cecina y chorizo, Patarashca, café y cacao amazónico.\n"
-        "- Datos prácticos: Moneda Soles (PEN), clima cálido tropical, uso de repelente ecológico y ropa ligera.\n"
+        "- ¿Pregunta sugerida 3?\n"
     )
 
     context_name = None
     context_prov = "San Martín"
     if isinstance(context, dict):
-        context_name = context.get("name") or context.get("nombre") or context.get("title")
+        context_name = context.get("name") or context.get("nombre") or context.get("title") or context.get("destination") or context.get("atractivo")
         context_prov = context.get("province") or context.get("provincia") or "San Martín"
     elif isinstance(context, str) and context.strip():
         context_name = context.strip()
 
     if context_name:
-        prompt += f"\nContexto visual de la pantalla: El turista está explorando '{context_name}' (Provincia: {context_prov}).\n"
+        prompt += f"\nContexto visual, no evidencia: la persona está viendo '{context_name}' (provincia indicada: {context_prov}).\n"
 
     if atractivos:
-        prompt += "\nAtractivos oficiales de San Martín verificados para enriquecer tu respuesta si es relevante:\n"
+        prompt += "\nRegistros de catálogo entregados para esta consulta. Usa solo los campos disponibles; null significa dato no confirmado:\n"
         for a in atractivos:
-            prompt += (
-                f"- {a['nombre']} ({a['provincia']} - {a['distrito']}, "
-                f"Duración: {a['duracion_horas']}h, Costo aprox: S/ {a['costo_pen']:.2f}, "
-                f"Dificultad: {a['dificultad']}): {a['descripcion']}\n"
+            prompt += f"- {a['nombre']} ({a['provincia']} - {a['distrito']}). Descripción registrada: {a['descripcion']}\n"
+            values = (
+                ("Duración estimada registrada", a.get("duracion_horas"), "h"),
+                ("Distancia desde Tarapoto registrada", a.get("distancia_km_tarapoto"), " km"),
+                ("Tiempo de viaje registrado", a.get("tiempo_viaje_horas_tarapoto"), " h"),
+                ("Duración total de tour registrada", a.get("tiempo_total_tour_horas"), " h"),
             )
+            for label, value, unit in values:
+                prompt += f"  {label}: {value}{unit}.\n" if value is not None else f"  {label}: no disponible/confirmado.\n"
+            if a.get("costo_es_acceso_libre"):
+                prompt += "  Costo registrado: la ficha indica acceso libre.\n"
+            elif a.get("costo_pen") is not None:
+                prompt += f"  Costo registrado: {a['costo_pen']} soles.\n"
+            else:
+                prompt += "  Costo registrado: no disponible/confirmado.\n"
+            for label, key in (("Horario referencial", "horario_referencial"), ("Ruta registrada", "ruta_acceso_desde_tarapoto")):
+                value = a.get(key)
+                prompt += f"  {label}: {value}.\n" if value else f"  {label}: no disponible/confirmado.\n"
+            if a.get("fecha_verificacion") and a.get("url_fuente"):
+                prompt += f"  Fuente de ficha: {a['url_fuente']}; fecha de verificación: {a['fecha_verificacion']}.\n"
+            if a.get("dificultad"):
+                prompt += f"  Dificultad registrada: {a['dificultad']}.\n"
+    else:
+        prompt += "\nNo se encontraron registros coincidentes en el catálogo para esta consulta. No inventes ni enumeres atractivos.\n"
 
     return prompt
 
@@ -287,7 +411,17 @@ def _extraer_suggested_actions(gemini_text: str, default_actions: list[str]) -> 
     return texto_limpio, actions[:3]
 
 
-async def consultar_gemini(
+@dataclass
+class ResultadoGeneracion:
+    reply: str
+    suggested_actions: list[str]
+    related_atractivos: list[dict[str, Any]]
+    source: str
+    model: Optional[str] = None
+    fallback_reason: Optional[str] = None
+
+
+async def consultar_gemini_resultado(
     message: str,
     context: Optional[dict[str, Any] | str] = None,
     catalogo: Optional[pd.DataFrame] = None,
@@ -296,7 +430,7 @@ async def consultar_gemini(
     model: Optional[str] = None,
     timeout_seconds: Optional[float] = None,
     history: Optional[list[dict[str, str]]] = None,
-) -> tuple[str, list[str], list[dict[str, Any]]]:
+) -> ResultadoGeneracion:
     """
     Envía una consulta a Google Gemini API utilizando el nivel gratuito (Free Tier).
 
@@ -320,10 +454,9 @@ async def consultar_gemini(
     system_instruction = _construir_system_prompt(atractivos_rel, context)
 
     default_actions = [
-        "¿Cuáles son las mejores cataratas cerca de Tarapoto?",
-        "¿Qué actividades puedo hacer en la Laguna de Sauce?",
-        "¿Qué opciones culturales y artesanales hay en Lamas?",
-        "¿Dónde degustar la mejor gastronomía típica de la región?",
+        "¿Qué atractivos aparecen en el catálogo?",
+        "¿Qué provincia de San Martín te interesa?",
+        "¿Qué tipo de experiencia estás buscando?",
     ]
 
     # 2. Construir historial de conversación interactiva
@@ -406,14 +539,14 @@ async def consultar_gemini(
                         if reply_text:
                             texto_limpio, actions = _extraer_suggested_actions(reply_text, default_actions)
                             registrar_en_historial(session_id, message, texto_limpio)
-                            return texto_limpio, actions, atractivos_salida
+                            return ResultadoGeneracion(texto_limpio, actions, atractivos_salida, "gemini", current_model)
 
                     # Respuesta vacía de candidatos
                     reply_text = (
                         "🌴 He recibido tu consulta sobre San Martín, pero no se generó una respuesta detallada. "
                         "Por favor reformula tu pregunta o elige una de las opciones sugeridas."
                     )
-                    return reply_text, default_actions, atractivos_salida
+                    return ResultadoGeneracion(reply_text, default_actions, atractivos_salida, "local", None, "empty_response")
 
                 # Caso 2: Cuota agotada (HTTP 429 - Too Many Requests / Resource Exhausted)
                 if response.status_code == 429:
@@ -424,11 +557,11 @@ async def consultar_gemini(
                         "de Google Gemini API. Por favor, espera unos momentos antes de realizar una nueva consulta.\n\n"
                         "Mientras tanto, puedes revisar los atractivos recomendados a continuación."
                     )
-                    return reply_cuota, [
+                    return ResultadoGeneracion(reply_cuota, [
                         "¿Cuáles son las cataratas más visitadas?",
                         "¿Cómo llegar a Sauce?",
                         "¿Dónde comer comida típica?",
-                    ], atractivos_salida
+                    ], atractivos_salida, "local", None, "quota_exceeded")
 
                 # Caso 3: Alta demanda o indisponibilidad temporal (HTTP 503) -> Probar siguiente modelo
                 if response.status_code == 503:
@@ -453,7 +586,7 @@ async def consultar_gemini(
                         "La API Key de Gemini configurada no es válida o no tiene permisos para el nivel gratuito. "
                         "Verifica la variable GEMINI_API_KEY en tu archivo `.env`."
                     )
-                    return reply_auth, default_actions, atractivos_salida
+                    return ResultadoGeneracion(reply_auth, default_actions, atractivos_salida, "local", None, "authentication_error")
 
                 # Otros códigos HTTP no previstos
                 logger.error("Gemini API respondió con código inesperado %d", response.status_code)
@@ -475,7 +608,22 @@ async def consultar_gemini(
                 "Por favor, intenta de nuevo en unos instantes.\n\n"
                 "Mientras tanto, puedes revisar los siguientes atractivos recomendados:"
             )
-            return reply_503, default_actions, atractivos_salida
+            return ResultadoGeneracion(reply_503, default_actions, atractivos_salida, "local", None, "service_unavailable")
 
         raise RuntimeError(f"Gemini API no devolvió una respuesta válida (código: {last_error_code}).")
+
+
+async def consultar_gemini(
+    message: str,
+    context: Optional[dict[str, Any] | str] = None,
+    catalogo: Optional[pd.DataFrame] = None,
+    session_id: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: Optional[str] = None,
+    timeout_seconds: Optional[float] = None,
+    history: Optional[list[dict[str, str]]] = None,
+) -> tuple[str, list[str], list[dict[str, Any]]]:
+    """Wrapper retrocompatible; los consumidores nuevos usan el resultado con metadata."""
+    result = await consultar_gemini_resultado(message, context, catalogo, session_id, api_key, model, timeout_seconds, history)
+    return result.reply, result.suggested_actions, result.related_atractivos
 

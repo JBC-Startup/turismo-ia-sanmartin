@@ -291,7 +291,7 @@ curl -X POST http://localhost:8000/api/valorar \
 ---
 
 ## 7. POST `/api/chat` (alias `/assistant/chat`)
-Diálogo con el Guía Inteligente. Utiliza **Google Gemini AI** (si `GEMINI_API_KEY` está configurada en `.env`) o el motor semántico de respaldo con los 297 atractivos oficiales.
+Diálogo con Loro FISI, mascota virtual de TurismoIA San Martín. Utiliza Gemini cuando está configurado y la consulta no requiere un dato práctico ausente. Los datos de costo, duración, horario, ruta y distancia se comparten con Gemini solo si la fuente los registró y el registro conserva estado publicado, URL y fecha de verificación. Los artefactos antiguos sin marcas de procedencia omiten esos datos hasta regenerarlos.
 
 ### Request Body:
 ```json
@@ -308,37 +308,37 @@ Diálogo con el Guía Inteligente. Utiliza **Google Gemini AI** (si `GEMINI_API_
 ### Respuesta (200 OK):
 ```json
 {
-  "reply": "🏰 En **Lamas**, la 'Ciudad de los Tres Pisos', encontrarás una fascinante combinación de tradición e historia viva. Te recomiendo visitar el **Castillo Medieval de Lamas** con su arquitectura singular, el **Barrio Nativo Kechwa El Wayku** donde podrás adquirir artesanías tradicionales y admirar la arquitectura de tapial, y la **Chocolatería Pepitas de Cacao** para probar cacao nativo fino de aroma.",
+  "reply": "¡Soy Loro FISI, la mascota virtual de TurismoIA San Martín! En los registros disponibles aparece el Castillo Medieval de Lamas. ¿Qué te gustaría conocer de este atractivo?",
   "suggested_actions": [
-    "¿Cuáles son las cataratas más recomendadas?",
-    "¿Qué visitar en un viaje familiar?",
-    "¿Dónde conocer la ruta del cacao y café?",
-    "¿Cómo llegar a la Laguna de Sauce?"
+    "¿Qué atractivos aparecen en el catálogo?",
+    "¿Qué provincia de San Martín te interesa?",
+    "¿Qué tipo de experiencia estás buscando?"
   ],
   "related_atractivos": [
     {
       "id_recurso": "REC-00204",
       "nombre": "CASTILLO MEDIEVAL DE LAMAS",
-      "provincia": "LAMAS",
-      "distrito": "LAMAS",
-      "duracion_horas": 1.0,
-      "costo_pen": 15.0,
-      "dificultad": "Baja",
-      "descripcion": "Singular fortaleza de estilo medieval erigida en la colina de Lamas..."
-    },
-    {
-      "id_recurso": "REC-00206",
-      "nombre": "COMUNIDAD NATIVA KECHWA EL WAYKU",
-      "provincia": "LAMAS",
-      "distrito": "LAMAS",
-      "duracion_horas": 1.5,
-      "costo_pen": 0.0,
-      "dificultad": "Baja",
-      "descripcion": "Comunidad ancestral depositaria del idioma kichwa y artesanía tradicional..."
+      "provincia": "",
+      "distrito": "",
+      "duracion_horas": null,
+      "costo_pen": null,
+      "distancia_km_tarapoto": null,
+      "tiempo_viaje_horas_tarapoto": null,
+      "horario_referencial": null,
+      "ruta_acceso_desde_tarapoto": null,
+      "dificultad": null,
+      "descripcion": ""
     }
-  ]
+  ],
+  "source": "gemini",
+  "model": "gemini-flash-lite-latest",
+  "fallback_reason": null
 }
 ```
+
+`source` identifica quién produjo el texto (`gemini` solo si la API devolvió contenido no vacío; `local` para respuestas locales). `model` solo aparece con un nombre conocido que generó el texto. `fallback_reason` puede ser `missing_api_key`, `quota_exceeded`, `empty_response`, `timeout`, `service_unavailable`, `authentication_error`, `gemini_error` o `unverified_data_unavailable`; puede ser `null` para respuestas Gemini auténticas y saludos locales deterministas. Los tres campos son opcionales para mantener compatibilidad.
+
+Ejemplo de contingencia: `{"reply":"...","source":"local","model":null,"fallback_reason":"quota_exceeded"}`.
 
 #### Ejemplo curl:
 ```bash

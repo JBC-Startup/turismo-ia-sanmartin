@@ -137,6 +137,14 @@ def clean_semantic_fields(
     """
     df_out = df.copy()
 
+    # Preservar si los campos operativos vinieron de la fuente antes de limpiar
+    # sus valores. Una cadena vacía tras la limpieza no debe confundirse con un
+    # horario o ruta que sí aparece en la ficha original.
+    for col in ("horario_referencial", "ruta_acceso_desde_tarapoto"):
+        if col in df_out.columns:
+            raw = df_out[col].astype("string").str.strip()
+            df_out[f"{col}_informado"] = raw.notna() & ~raw.str.lower().isin({"", "nan", "none", "null", "n/a", "na", "<na>"})
+
     if semantic_columns is None:
         semantic_columns = [
             "descripcion_corta",
@@ -190,6 +198,11 @@ def clean_categorical_fields(
     """
     df_out = df.copy()
     imputed_counts: dict[str, int] = {}
+
+    for col in ("provincia", "distrito", "nivel_dificultad"):
+        if col in df_out.columns:
+            raw = df_out[col].astype("string").str.strip()
+            df_out[f"{col}_informado"] = raw.notna() & ~raw.str.lower().isin({"", "nan", "none", "null", "n/a", "na", "<na>"})
 
     # 1. Normalización de provincia
     if "provincia" in df_out.columns:
@@ -285,7 +298,9 @@ def clean_numerical_fields(
     df: pd.DataFrame,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """
-    Imputación y conversión segura de variables numéricas a float:
+    Imputación y conversión segura de variables numéricas a float. Para uso
+    conversacional también conserva flags *_informado que indican si el valor
+    era numérico y estaba presente antes de imputar:
     - duracion_estimada_horas: float, nulos imputados con la mediana de la columna (fallback: 2.0).
     - costo_referencial_pen: float, nulos imputados con 0.0 (acceso gratuito).
     - distancia_km_tarapoto: float, nulos imputados con la mediana (fallback: 115.0).
@@ -299,6 +314,7 @@ def clean_numerical_fields(
     # 1. duracion_estimada_horas
     if "duracion_estimada_horas" in df_out.columns:
         dur_raw = pd.to_numeric(df_out["duracion_estimada_horas"], errors="coerce")
+        df_out["duracion_estimada_horas_informado"] = dur_raw.notna()
         dur_median = dur_raw.median()
         if pd.isna(dur_median):
             dur_median = 2.0
@@ -317,6 +333,13 @@ def clean_numerical_fields(
     # 2. costo_referencial_pen
     if "costo_referencial_pen" in df_out.columns:
         cost_raw = pd.to_numeric(df_out["costo_referencial_pen"], errors="coerce")
+        raw_text = df_out["costo_referencial_pen"].astype("string").str.strip().str.lower()
+        explicit_free = raw_text.isin({"gratis", "gratuito", "gratuita", "acceso libre", "sin costo", "libre"})
+        # Un 0 numérico es ambiguo: puede ser imputación o “gratis”. Solo
+        # conservarlo como dato conversacional si la fuente lo expresa
+        # textualmente como acceso libre; los importes positivos se conservan.
+        df_out["costo_referencial_pen_informado"] = (cost_raw > 0) | explicit_free
+        df_out["costo_acceso_libre_informado"] = explicit_free
         n_imputed = int(cost_raw.isna().sum())
         cost_clean = cost_raw.fillna(0.0).astype(float)
         cost_clean = cost_clean.clip(lower=0.0)
@@ -332,6 +355,7 @@ def clean_numerical_fields(
     # 3. distancia_km_tarapoto
     if "distancia_km_tarapoto" in df_out.columns:
         dist_raw = pd.to_numeric(df_out["distancia_km_tarapoto"], errors="coerce")
+        df_out["distancia_km_tarapoto_informado"] = dist_raw.notna()
         dist_median = dist_raw.median()
         if pd.isna(dist_median):
             dist_median = 115.0
@@ -348,6 +372,7 @@ def clean_numerical_fields(
     # 4. tiempo_viaje_horas_tarapoto
     if "tiempo_viaje_horas_tarapoto" in df_out.columns:
         viaje_raw = pd.to_numeric(df_out["tiempo_viaje_horas_tarapoto"], errors="coerce")
+        df_out["tiempo_viaje_horas_tarapoto_informado"] = viaje_raw.notna()
         viaje_median = viaje_raw.median()
         if pd.isna(viaje_median):
             viaje_median = 2.0
@@ -364,6 +389,7 @@ def clean_numerical_fields(
     # 5. tiempo_total_tour_horas
     if "tiempo_total_tour_horas" in df_out.columns:
         total_raw = pd.to_numeric(df_out["tiempo_total_tour_horas"], errors="coerce")
+        df_out["tiempo_total_tour_horas_informado"] = total_raw.notna()
         total_median = total_raw.median()
         if pd.isna(total_median):
             total_median = 5.6

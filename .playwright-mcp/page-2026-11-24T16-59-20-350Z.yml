@@ -1,0 +1,67 @@
+- main [ref=f3e3]:
+  - generic [ref=f3e4]:
+    - generic [ref=f3e5]:
+      - text: TURISMOIA SAN MARTÍN
+      - heading "Mono FISI · Guía conversacional" [level=1] [ref=f3e6]
+    - generic [ref=f3e7]:
+      - text: Modelo
+      - combobox "Modelo" [ref=f3e8]:
+        - option "Original · 4K · recomendado" [selected]
+        - option "Experimental conservador · BC 4K, N/MR 2K"
+        - option "Experimental texturas 2K"
+        - option "Rig experimental · depuración"
+  - generic [ref=f3e9]:
+    - region "Avatar del guía" [ref=f3e10]:
+      - generic [ref=f3e14]: En espera
+      - generic [ref=f3e16]: Original · referencia · movimiento corporal sutil, sin lip-sync
+      - generic:
+        - generic: 5 FPS medio · 186.0 ms medio
+        - generic: p95 252.3 ms · 1 draw calls
+        - generic: Ventana 30 s · reposo · DPR efectivo 1.00
+        - generic: "Renderer: WebKit WebGL"
+    - region "Conversación con el guía" [ref=f3e17]:
+      - generic [ref=f3e18]:
+        - generic [ref=f3e19]:
+          - text: GUÍA DE SAN MARTÍN
+          - heading "¿Qué te gustaría conocer?" [level=2] [ref=f3e20]
+        - generic [ref=f3e21]: Backend TurismoIA
+      - generic [ref=f3e22]:
+        - article [ref=f3e23]:
+          - text: Tú
+          - paragraph [ref=f3e24]: Consulta escrita
+        - article [ref=f3e25]:
+          - text: Mono FISI · Gemini · gemini-test
+          - paragraph [ref=f3e26]: La Catarata queda en San Martín.
+        - article [ref=f3e27]:
+          - text: Tú
+          - paragraph [ref=f3e28]: Recomiéndame sitios en Rioja
+        - article [ref=f3e29]:
+          - text: Mono FISI · Gemini · gemini-test
+          - paragraph [ref=f3e30]: La Catarata queda en San Martín.
+      - alert [ref=f3e31]: No se pudo decodificar el audio recibido.
+      - generic [ref=f3e32]:
+        - generic [ref=f3e33]: Tu pregunta
+        - textbox "Tu pregunta" [ref=f3e34]:
+          - /placeholder: Escribe tu pregunta…
+        - generic [ref=f3e35]:
+          - button "Iniciar reconocimiento de voz" [disabled] [ref=f3e36]: 🎙 Hablar
+          - status [ref=f3e37]: Revisa el aviso de voz
+        - paragraph [ref=f3e38]: El reconocimiento no está disponible en este navegador. La entrada por texto sigue disponible.
+        - paragraph [ref=f3e39]: El reconocimiento nativo puede procesarse mediante servicios externos según el navegador. No se guarda una grabación en esta demo.
+        - alert [ref=f3e40]: No se concedió permiso para usar el micrófono. Revisa los permisos del sitio y vuelve a intentarlo.
+        - generic [ref=f3e41]:
+          - checkbox "Revisar transcripción antes de enviarla" [ref=f3e42]
+          - text: Revisar transcripción antes de enviarla
+        - generic [ref=f3e43]:
+          - generic [ref=f3e44]:
+            - checkbox "Usar respuesta de demostración local" [ref=f3e45]
+            - text: Usar respuesta de demostración local
+          - button "Enviar" [disabled] [ref=f3e46]
+      - button "Reproducir con voz del navegador (no es ElevenLabs)" [ref=f3e47] [cursor=pointer]
+      - group [ref=f3e48]:
+        - generic "Diagnóstico de conexión" [ref=f3e49] [cursor=pointer]
+      - generic [ref=f3e50]:
+        - button "Reproducir voz ElevenLabs" [ref=f3e51] [cursor=pointer]
+        - generic [ref=f3e52]: Modelo listo · carga 292 ms · 1,499,546 triángulos · 864,464 vértices · 1 mallas · 1 materiales · texturas 4096×4096 (~256 MiB GPU)
+        - generic [ref=f3e53]: "Última ventana de reposo: 5 FPS, 186.0 ms/frame, GLB 82.2 MiB"
+  - generic [ref=f3e54]: "Voz: ElevenLabs a través de TurismoIA · El GLB original no se modificó"

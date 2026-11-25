@@ -306,6 +306,9 @@ class ChatResponse(BaseModel):
     reply: str = Field(..., description="Respuesta del guía/asistente turístico inteligente")
     suggested_actions: list[str] = Field(default_factory=list, description="Preguntas o acciones sugeridas")
     related_atractivos: list[dict[str, Any]] = Field(default_factory=list, description="Atractivos específicos recomendados relacionados con la consulta")
+    source: Optional[str] = Field(default=None, description="Origen efectivo del contenido: gemini o local")
+    model: Optional[str] = Field(default=None, description="Modelo de Gemini que generó efectivamente la respuesta")
+    fallback_reason: Optional[str] = Field(default=None, description="Código no sensible que explica el uso de respuesta local")
 
 
 class TTSRequest(BaseModel):

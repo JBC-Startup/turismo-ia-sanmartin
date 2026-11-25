@@ -1,0 +1,38 @@
+- main [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - text: TURISMOIA SAN MARTÍN
+      - heading "Mono FISI · Guía conversacional" [level=1] [ref=e6]
+    - generic [ref=e7]:
+      - text: Modelo
+      - combobox "Modelo" [ref=e8]:
+        - option "Original · recomendado" [selected]
+        - option "Experimental · depuración"
+  - generic [ref=e9]:
+    - region "Avatar del guía" [ref=e10]:
+      - generic: Cargando GLB original (86 MB)…
+      - generic [ref=e14]: En espera
+      - generic [ref=e16]: Modelo original · movimiento corporal sutil · sin lip-sync
+      - generic:
+        - generic: Midiendo rendimiento…
+        - generic: Ventanas sostenidas de 5 segundos
+    - region "Conversación con el guía" [ref=e17]:
+      - generic [ref=e18]:
+        - generic [ref=e19]:
+          - text: GUÍA DE SAN MARTÍN
+          - heading "¿Qué te gustaría conocer?" [level=2] [ref=e20]
+        - generic [ref=e21]: Backend TurismoIA
+      - paragraph [ref=e23]: Pregúntame sobre un destino, una ruta o qué hacer en San Martín. Consultaré el backend configurado; no inventaré datos si no está disponible.
+      - generic [ref=e24]:
+        - generic [ref=e25]: Tu pregunta
+        - textbox "Tu pregunta" [ref=e26]:
+          - /placeholder: Escribe tu pregunta…
+        - generic [ref=e27]:
+          - generic [ref=e28]:
+            - checkbox "Usar respuesta de demostración local" [ref=e29]
+            - text: Usar respuesta de demostración local
+          - button "Enviar" [disabled] [ref=e30]
+      - group [ref=e31]:
+        - generic "Diagnóstico de conexión" [ref=e32] [cursor=pointer]
+      - generic [ref=e33]: GLB original · animación corporal sutil; no existe lip-sync.
+  - generic [ref=e35]: "Voz: ElevenLabs a través de TurismoIA · El GLB original no se modificó"

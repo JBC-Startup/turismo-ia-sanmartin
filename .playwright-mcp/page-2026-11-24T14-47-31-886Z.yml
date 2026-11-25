@@ -1,0 +1,41 @@
+- main [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - text: TURISMOIA SAN MARTÍN
+      - heading "Mono FISI · Guía conversacional" [level=1] [ref=e6]
+    - generic [ref=e7]:
+      - text: Modelo
+      - combobox "Modelo" [ref=e8]:
+        - option "Original · recomendado" [selected]
+        - option "Experimental · depuración"
+  - generic [ref=e9]:
+    - region "Avatar del guía" [ref=e10]:
+      - generic [ref=e14]: En espera
+      - generic [ref=e16]: Modelo original · movimiento corporal sutil · sin lip-sync
+      - generic:
+        - generic: 1 FPS · 1198.7 ms
+        - generic: p95 1327.2 ms · 1 draw calls
+        - generic: "Fase: reposo · DPR 1.00"
+        - generic: "GPU: WebKit WebGL"
+    - region "Conversación con el guía" [ref=e17]:
+      - generic [ref=e18]:
+        - generic [ref=e19]:
+          - text: GUÍA DE SAN MARTÍN
+          - heading "¿Qué te gustaría conocer?" [level=2] [ref=e20]
+        - generic [ref=e21]: Backend TurismoIA
+      - paragraph [ref=e23]: Pregúntame sobre un destino, una ruta o qué hacer en San Martín. Consultaré el backend configurado; no inventaré datos si no está disponible.
+      - generic [ref=e24]:
+        - generic [ref=e25]: Tu pregunta
+        - textbox "Tu pregunta" [ref=e26]:
+          - /placeholder: Escribe tu pregunta…
+        - generic [ref=e27]:
+          - generic [ref=e28]:
+            - checkbox "Usar respuesta de demostración local" [ref=e29]
+            - text: Usar respuesta de demostración local
+          - button "Enviar" [disabled] [ref=e30]
+      - group [ref=e31]:
+        - generic "Diagnóstico de conexión" [ref=e32] [cursor=pointer]
+      - generic [ref=e33]:
+        - generic [ref=e36]: Modelo listo · carga 4 ms · 1,499,546 triángulos · 1 mallas
+        - generic [ref=e34]: "Última ventana de reposo: 1 FPS, 1198.7 ms/frame, GLB 82.2 MB"
+  - generic [ref=e35]: "Voz: ElevenLabs a través de TurismoIA · El GLB original no se modificó"
