@@ -305,4 +305,5 @@ class TTSRequest(BaseModel):
     """Payload para generar síntesis de voz con ElevenLabs TTS."""
     text: str = Field(..., max_length=2500, description="Texto en español a sintetizar con ElevenLabs", examples=["¡Hola explorador! Bienvenidos a San Martín."])
     voice_id: Optional[str] = Field(default=None, description="Voice ID de ElevenLabs opcional para override")
+    emotion: Optional[str] = Field(default=None, pattern=r"^(alegria|entusiasmo|sorpresa|curiosidad)$")
 

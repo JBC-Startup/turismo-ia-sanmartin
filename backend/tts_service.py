@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -17,7 +18,17 @@ TTS_CACHE_DIR = Path(__file__).resolve().parent / ".cache" / "tts"
 TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-async def generar_audio_elevenlabs(texto: str, voice_id: Optional[str] = None) -> bytes:
+EMOTION_VOICE_SETTINGS = {
+    "alegria": {"stability": 0.38, "style": 0.35, "speed": 1.02},
+    "entusiasmo": {"stability": 0.32, "style": 0.45, "speed": 1.09},
+    "sorpresa": {"stability": 0.3, "style": 0.4, "speed": 1.04},
+    "curiosidad": {"stability": 0.44, "style": 0.25, "speed": 0.93},
+}
+
+
+async def generar_audio_elevenlabs(
+    texto: str, voice_id: Optional[str] = None, emotion: Optional[str] = None
+) -> bytes:
     """
     Sintetiza texto en audio MP3 de alta fidelidad humana utilizando la API de ElevenLabs.
     
@@ -31,15 +42,21 @@ async def generar_audio_elevenlabs(texto: str, voice_id: Optional[str] = None) -
         raise ValueError("ELEVENLABS_API_KEY no está configurada en el backend.")
 
     effective_voice_id = voice_id or settings.ELEVENLABS_VOICE_ID or "TX3LPaxmHKxFdv7VOQHJ"
-    model_id = settings.ELEVENLABS_MODEL_ID or "eleven_multilingual_v2"
+    model_id = settings.ELEVENLABS_MODEL_ID or "eleven_turbo_v2_5"
+    if model_id == "eleven_multilingual_v2":
+        # Multilingual v2 cannot enforce the language of short phrases.
+        model_id = "eleven_turbo_v2_5"
 
     # Limpiar y normalizar el texto para el caché
     clean_text = texto.strip()
     if not clean_text:
         raise ValueError("El texto para la síntesis de voz no puede estar vacío.")
 
+    # Ajusta la pronunciación sin cambiar el nombre que se muestra en pantalla.
+    spoken_text = re.sub(r"\bjheison\b", "Yéison", clean_text, flags=re.IGNORECASE)
+
     # Generar hash único para caché
-    cache_key = hashlib.sha256(f"{effective_voice_id}:{model_id}:{clean_text}".encode("utf-8")).hexdigest()
+    cache_key = hashlib.sha256(f"{effective_voice_id}:{model_id}:es:{emotion}:{spoken_text}".encode("utf-8")).hexdigest()
     cache_file = TTS_CACHE_DIR / f"{cache_key}.mp3"
 
     if cache_file.exists() and cache_file.stat().st_size > 0:
@@ -54,13 +71,15 @@ async def generar_audio_elevenlabs(texto: str, voice_id: Optional[str] = None) -
         "Accept": "audio/mpeg",
     }
     payload = {
-        "text": clean_text,
+        "text": spoken_text,
         "model_id": model_id,
+        "language_code": "es",
         "voice_settings": {
             "stability": 0.5,
             "similarity_boost": 0.8,
             "style": 0.15,
             "use_speaker_boost": True,
+            **EMOTION_VOICE_SETTINGS.get(emotion or "", {}),
         },
     }
 

@@ -237,3 +237,33 @@ async def test_api_chat_endpoint_e2e():
             # Verificar que ninguna API key se filtre en la respuesta JSON
             assert "AQ." not in str(data)
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message, expected",
+    [
+        ("Hola, ¿cómo estás?", "¿Y tú, cómo estás?"),
+        ("Hola, ¿cómo estás? ¿Cómo amaneciste?", "¿Y tú, cómo estás?"),
+        ("Hola, ¿cómo era? ¿Cómo buenas noches?", "¿Cómo estás?"),
+        ("Muy bien, gracias. ¿Y tú?", "Yo también estoy bien"),
+    ],
+)
+async def test_jheison_reciproca_un_saludo(message, expected):
+    with patch("services.consultar_gemini", side_effect=AssertionError("El saludo se responde localmente")):
+        response = await procesar_consulta_asistente(message)
+    assert expected in response.reply
+    assert response.related_atractivos == []
+
+
+@pytest.mark.asyncio
+async def test_saludo_con_consulta_turistica_conserva_la_pregunta(mock_catalogo):
+    class FakeEngine:
+        catalogo = mock_catalogo
+
+    with patch.object(settings, "GEMINI_API_KEY", None):
+        response = await procesar_consulta_asistente(
+            "Hola, ¿cómo llego a la Laguna de Sauce?",
+            engine=FakeEngine(),
+        )
+    assert "Sauce" in response.reply

@@ -541,6 +541,7 @@ async def sintetizar_voz_elevenlabs(payload: TTSRequest):
         audio_bytes = await generar_audio_elevenlabs(
             texto=payload.text,
             voice_id=payload.voice_id,
+            emotion=payload.emotion,
         )
         return Response(content=audio_bytes, media_type="audio/mpeg")
     except ValueError as val_err:
